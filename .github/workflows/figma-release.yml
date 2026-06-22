@@ -26,20 +26,27 @@
 #       `<base>` tag — so a branch mislabeled `8.6.0-figma` that was really cut
 #       from 8.5.0 fails fast instead of producing a wrongly-named release.
 #
-#   * fork build counter     = max existing `<base>-figma.N` release + 1.
+#   * fork build counter     = max existing `<base>-figmaN` release + 1.
 #       The `setup` job lists existing releases and auto-increments, so re-cuts
 #       can never collide with or skip a previous build number. First build of
-#       a base is `.1`.
+#       a base is `1`.
 #
-#   * embed label / tag      = `<base>-figma.<counter>`, e.g. `8.6.0-figma.2`.
+#   * release version / tag  = `<base>-figma<counter>`, e.g. `8.6.0-figma2`.
 #
-# The release is tagged exactly `<embed_label>` and gets one binary per
-# platform plus a matching `.sha256`. Asset names match Bazelisk's convention
+#       NOTE the format carefully: a hyphen after x.y.z, then "figma", then the
+#       number with NO dot. This is dictated by Bazelisk, which only accepts a
+#       custom suffix via its "patch" grammar `^(\d+\.\d+\.\d+)-([\w\d]+)$` —
+#       the suffix may contain letters/digits/underscore but NOT dots. So
+#       `8.6.0-figma2` is valid, while `8.6.0-figma.2` and `8.6.0figma2` are
+#       both rejected by Bazelisk ("invalid version").
+#
+# The release is tagged exactly `<version>` and gets one binary per platform
+# plus a matching `.sha256`. Asset names match Bazelisk's convention
 # `bazel-<version>-<os>-<arch>` (and the JDK-less `bazel_nojdk-<version>-...`):
 #
-#   bazel-8.6.0-figma.2-linux-x86_64        bazel_nojdk-8.6.0-figma.2-linux-x86_64
-#   bazel-8.6.0-figma.2-linux-arm64         bazel_nojdk-8.6.0-figma.2-linux-arm64
-#   bazel-8.6.0-figma.2-darwin-arm64        bazel_nojdk-8.6.0-figma.2-darwin-arm64
+#   bazel-8.6.0-figma2-linux-x86_64         bazel_nojdk-8.6.0-figma2-linux-x86_64
+#   bazel-8.6.0-figma2-linux-arm64          bazel_nojdk-8.6.0-figma2-linux-arm64
+#   bazel-8.6.0-figma2-darwin-arm64         bazel_nojdk-8.6.0-figma2-darwin-arm64
 #
 # -----------------------------------------------------------------------------
 # Consuming a release (how to point YOUR build's environment at our fork)
@@ -50,18 +57,18 @@
 # use a Figma build, set ONE of the following (env var wins over the file):
 #
 #   # Option A — environment variable (best for CI / one-off overrides):
-#   export USE_BAZEL_VERSION=figma/8.6.0-figma.2
+#   export USE_BAZEL_VERSION=figma/8.6.0-figma2
 #
 #   # Option B — check it into the repo so every invocation is pinned:
-#   echo 'figma/8.6.0-figma.2' > .bazelversion
+#   echo 'figma/8.6.0-figma2' > .bazelversion
 #
 # With either set, `bazel ...` (run through Bazelisk) resolves to the URL:
 #
-#   https://github.com/figma/bazel/releases/download/8.6.0-figma.2/bazel-8.6.0-figma.2-<os>-<arch>
+#   https://github.com/figma/bazel/releases/download/8.6.0-figma2/bazel-8.6.0-figma2-<os>-<arch>
 #
 # where Bazelisk fills in <os> (`linux`/`darwin`) and <arch> (`x86_64`/`arm64`)
-# for the current machine. That is why the release tag, the embed label, and
-# the `<version>` segment of every asset name MUST all be identical.
+# for the current machine. That is why the release tag, the embedded version,
+# and the `<version>` segment of every asset name MUST all be identical.
 #
 # Related Bazelisk knobs:
 #   BAZELISK_NOJDK=1          fetch the `bazel_nojdk-*` assets (no embedded JDK)
@@ -93,7 +100,7 @@ jobs:
     outputs:
       sha: ${{ steps.resolve.outputs.sha }}
       base_version: ${{ steps.resolve.outputs.base_version }}
-      embed_label: ${{ steps.resolve.outputs.embed_label }}
+      version: ${{ steps.resolve.outputs.version }}
     steps:
       - name: Checkout ${{ inputs.ref }}
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -101,7 +108,7 @@ jobs:
           ref: ${{ inputs.ref }}
           fetch-depth: 0
 
-      - name: Resolve base version, counter, and embed label
+      - name: Resolve base version and figma build counter
         id: resolve
         env:
           GH_TOKEN: ${{ github.token }}
@@ -128,28 +135,33 @@ jobs:
             exit 1
           fi
 
-          # 3. Auto-increment the fork build counter from existing releases.
-          #    Match exactly "<base>-figma.<N>" and take the max N (default 0).
+          # 3. Auto-increment the figma build counter from existing releases.
+          #    The version MUST satisfy Bazelisk's "patch" grammar
+          #    `^(\d+\.\d+\.\d+)-([\w\d]+)$`: a mandatory hyphen after x.y.z,
+          #    then letters/digits/underscore only (NO dots). So the counter is
+          #    `<base>-figma<N>` (e.g. 8.6.0-figma1) — note there is no dot
+          #    before the number; `8.6.0-figma.1` is rejected by Bazelisk.
+          #    Match exactly "<base>-figma<N>" and take the max N (default 0).
           esc_base="$(printf '%s' "$base" | sed 's/\./\\./g')"
           max="$(gh release list --repo "$GITHUB_REPOSITORY" --limit 1000 \
                    --json tagName --jq '.[].tagName' \
-                 | grep -E "^${esc_base}-figma\.[0-9]+$" \
-                 | sed -E 's/.*-figma\.//' \
+                 | grep -E "^${esc_base}-figma[0-9]+$" \
+                 | sed -E 's/.*-figma//' \
                  | sort -n | tail -1 || true)"
           next=$(( ${max:-0} + 1 ))
-          embed_label="${base}-figma.${next}"
+          version="${base}-figma${next}"
 
           sha="$(git rev-parse HEAD)"
           {
             echo "sha=$sha"
             echo "base_version=$base"
-            echo "embed_label=$embed_label"
+            echo "version=$version"
           } >> "$GITHUB_OUTPUT"
 
           echo "ref '$ref' @ ${sha:0:12}"
           echo "upstream base: $base (host Bazel)"
-          echo "previous build counter for $base: ${max:-none}"
-          echo "=> embed label / tag: $embed_label"
+          echo "previous figma build for $base: ${max:-none}"
+          echo "=> release version / tag: $version"
 
   build:
     name: build ${{ matrix.platform }}
@@ -211,22 +223,22 @@ jobs:
           # Bazelisk reads this instead of the checked-in .bazelversion, so the
           # host Bazel used to build always matches the upstream base version.
           USE_BAZEL_VERSION: ${{ needs.setup.outputs.base_version }}
-          EMBED_LABEL: ${{ needs.setup.outputs.embed_label }}
+          VERSION: ${{ needs.setup.outputs.version }}
           LINK_FLAGS: ${{ matrix.link_flags }}
         run: |
           set -euo pipefail
           bazel build -c opt --stamp \
-            --embed_label "$EMBED_LABEL" \
+            --embed_label "$VERSION" \
             --incompatible_strict_action_env=true \
             $LINK_FLAGS \
             //src:bazel //src:bazel_nojdk
 
       - name: Package artifacts
         env:
-          EMBED_LABEL: ${{ needs.setup.outputs.embed_label }}
+          VERSION: ${{ needs.setup.outputs.version }}
         run: |
           set -euo pipefail
-          label="$EMBED_LABEL"
+          label="$VERSION"
           os='${{ matrix.os }}'
           arch='${{ matrix.arch }}'
           mkdir -p dist
@@ -269,11 +281,11 @@ jobs:
 
       - name: Generate release notes
         env:
-          EMBED_LABEL: ${{ needs.setup.outputs.embed_label }}
+          VERSION: ${{ needs.setup.outputs.version }}
           BASE_VERSION: ${{ needs.setup.outputs.base_version }}
         run: |
           set -euo pipefail
-          label="$EMBED_LABEL"
+          label="$VERSION"
           base="$BASE_VERSION"
           ref='${{ inputs.ref }}'
 
@@ -327,19 +339,19 @@ jobs:
       - name: Create GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
-          EMBED_LABEL: ${{ needs.setup.outputs.embed_label }}
+          VERSION: ${{ needs.setup.outputs.version }}
           TARGET_SHA: ${{ needs.setup.outputs.sha }}
         run: |
           set -euo pipefail
           # --repo is required: the notes step adds an `upstream` remote, and an
           # unqualified `gh` resolves to the base repo (upstream bazelbuild/bazel)
           # rather than this fork. Pin it to this repo explicitly.
-          # Tag == embed_label so the download URL matches what Bazelisk derives
-          # from USE_BAZEL_VERSION=figma/<embed_label>. Target the exact commit
+          # Tag == version so the download URL matches what Bazelisk derives
+          # from USE_BAZEL_VERSION=figma/<version>. Target the exact commit
           # the whole run was pinned to in the `setup` job.
-          gh release create "$EMBED_LABEL" \
+          gh release create "$VERSION" \
             --repo "$GITHUB_REPOSITORY" \
             --target "$TARGET_SHA" \
-            --title "Bazel $EMBED_LABEL" \
+            --title "Bazel $VERSION" \
             --notes-file RELEASE_NOTES.md \
             dist/*
