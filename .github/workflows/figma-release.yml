@@ -331,10 +331,14 @@ jobs:
           TARGET_SHA: ${{ needs.setup.outputs.sha }}
         run: |
           set -euo pipefail
+          # --repo is required: the notes step adds an `upstream` remote, and an
+          # unqualified `gh` resolves to the base repo (upstream bazelbuild/bazel)
+          # rather than this fork. Pin it to this repo explicitly.
           # Tag == embed_label so the download URL matches what Bazelisk derives
           # from USE_BAZEL_VERSION=figma/<embed_label>. Target the exact commit
           # the whole run was pinned to in the `setup` job.
           gh release create "$EMBED_LABEL" \
+            --repo "$GITHUB_REPOSITORY" \
             --target "$TARGET_SHA" \
             --title "Bazel $EMBED_LABEL" \
             --notes-file RELEASE_NOTES.md \
