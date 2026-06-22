@@ -12,24 +12,34 @@
 # This workflow lives on the default branch (master) ONLY so it shows up under
 # Actions > "Figma Bazel Release" > "Run workflow" in the GitHub UI. It builds
 # whatever `ref` you point it at, so the file itself never changes between
-# releases. To cut a release, click "Run workflow" and supply:
+# releases. There is exactly ONE input:
 #
-#   ref          The branch/tag/commit to build, e.g. `8.6.0-figma`.
-#   embed_label  The release version, e.g. `8.6.0-figma.1`.
-#                  * `.1` is the FORK BUILD COUNTER — bump it (`.2`, `.3`, ...)
-#                    if you re-cut a release from the same upstream base.
-#                  * the upstream base version is derived by stripping
-#                    `-figma...`, so `8.6.0-figma.1` is built with the official
-#                    Bazel `8.6.0` as the host Bazel (see USE_BAZEL_VERSION
-#                    below). `8.7.0-figma.1` would build with `8.7.0`, etc.
+#   ref   The fork branch (or tag/commit) to build. By convention this is named
+#         `<upstream-version>-figma`, e.g. `8.6.0-figma`.
+#
+# Everything else is computed — there is no human-chosen version string to get
+# wrong:
+#
+#   * upstream base version  = `ref` with `-figma...` stripped, e.g. `8.6.0`.
+#       This is the host Bazel used to build (see USE_BAZEL_VERSION below), and
+#       the `setup` job asserts that `ref` actually descends from the upstream
+#       `<base>` tag — so a branch mislabeled `8.6.0-figma` that was really cut
+#       from 8.5.0 fails fast instead of producing a wrongly-named release.
+#
+#   * fork build counter     = max existing `<base>-figma.N` release + 1.
+#       The `setup` job lists existing releases and auto-increments, so re-cuts
+#       can never collide with or skip a previous build number. First build of
+#       a base is `.1`.
+#
+#   * embed label / tag      = `<base>-figma.<counter>`, e.g. `8.6.0-figma.2`.
 #
 # The release is tagged exactly `<embed_label>` and gets one binary per
 # platform plus a matching `.sha256`. Asset names match Bazelisk's convention
 # `bazel-<version>-<os>-<arch>` (and the JDK-less `bazel_nojdk-<version>-...`):
 #
-#   bazel-8.6.0-figma.1-linux-x86_64        bazel_nojdk-8.6.0-figma.1-linux-x86_64
-#   bazel-8.6.0-figma.1-linux-arm64         bazel_nojdk-8.6.0-figma.1-linux-arm64
-#   bazel-8.6.0-figma.1-darwin-arm64        bazel_nojdk-8.6.0-figma.1-darwin-arm64
+#   bazel-8.6.0-figma.2-linux-x86_64        bazel_nojdk-8.6.0-figma.2-linux-x86_64
+#   bazel-8.6.0-figma.2-linux-arm64         bazel_nojdk-8.6.0-figma.2-linux-arm64
+#   bazel-8.6.0-figma.2-darwin-arm64        bazel_nojdk-8.6.0-figma.2-darwin-arm64
 #
 # -----------------------------------------------------------------------------
 # Consuming a release (how to point YOUR build's environment at our fork)
@@ -40,14 +50,14 @@
 # use a Figma build, set ONE of the following (env var wins over the file):
 #
 #   # Option A — environment variable (best for CI / one-off overrides):
-#   export USE_BAZEL_VERSION=figma/8.6.0-figma.1
+#   export USE_BAZEL_VERSION=figma/8.6.0-figma.2
 #
 #   # Option B — check it into the repo so every invocation is pinned:
-#   echo 'figma/8.6.0-figma.1' > .bazelversion
+#   echo 'figma/8.6.0-figma.2' > .bazelversion
 #
 # With either set, `bazel ...` (run through Bazelisk) resolves to the URL:
 #
-#   https://github.com/figma/bazel/releases/download/8.6.0-figma.1/bazel-8.6.0-figma.1-<os>-<arch>
+#   https://github.com/figma/bazel/releases/download/8.6.0-figma.2/bazel-8.6.0-figma.2-<os>-<arch>
 #
 # where Bazelisk fills in <os> (`linux`/`darwin`) and <arch> (`x86_64`/`arm64`)
 # for the current machine. That is why the release tag, the embed label, and
@@ -68,11 +78,7 @@ on:
   workflow_dispatch:
     inputs:
       ref:
-        description: "Branch, tag, or commit to build (e.g. 8.6.0-figma)"
-        required: true
-        type: string
-      embed_label:
-        description: "Release version / embed label, e.g. 8.6.0-figma.1. Becomes the release tag; the upstream base version is derived by stripping '-figma...' (so 8.6.0-figma.1 builds with upstream Bazel 8.6.0)."
+        description: "Fork branch/tag/commit to build, named <upstream-version>-figma (e.g. 8.6.0-figma). The release version is derived automatically."
         required: true
         type: string
 
@@ -80,8 +86,74 @@ permissions:
   contents: read
 
 jobs:
+  # Resolve everything from `ref` so no version string is ever typed by hand.
+  setup:
+    name: Resolve version
+    runs-on: ubuntu-22.04
+    outputs:
+      sha: ${{ steps.resolve.outputs.sha }}
+      base_version: ${{ steps.resolve.outputs.base_version }}
+      embed_label: ${{ steps.resolve.outputs.embed_label }}
+    steps:
+      - name: Checkout ${{ inputs.ref }}
+        uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # v4.1.1
+        with:
+          ref: ${{ inputs.ref }}
+          fetch-depth: 0
+
+      - name: Resolve base version, counter, and embed label
+        id: resolve
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          ref='${{ inputs.ref }}'
+
+          # 1. Derive the upstream base version from the fork branch name.
+          base="${ref%%-figma*}"
+          if [ "$base" = "$ref" ] || [ -z "$base" ]; then
+            echo "::error::ref '$ref' must be a Figma fork branch named like '8.6.0-figma'"
+            exit 1
+          fi
+          if ! printf '%s' "$base" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::derived base '$base' is not a valid x.y.z version (from ref '$ref')"
+            exit 1
+          fi
+
+          # 2. Sanity check: the ref must actually descend from upstream <base>.
+          git remote add upstream https://github.com/bazelbuild/bazel.git 2>/dev/null || true
+          git fetch --no-tags upstream "refs/tags/${base}:refs/tags/upstream-${base}"
+          if ! git merge-base --is-ancestor "upstream-${base}" HEAD; then
+            echo "::error::ref '$ref' does not descend from upstream Bazel ${base} — wrong base version?"
+            exit 1
+          fi
+
+          # 3. Auto-increment the fork build counter from existing releases.
+          #    Match exactly "<base>-figma.<N>" and take the max N (default 0).
+          esc_base="$(printf '%s' "$base" | sed 's/\./\\./g')"
+          max="$(gh release list --repo "$GITHUB_REPOSITORY" --limit 1000 \
+                   --json tagName --jq '.[].tagName' \
+                 | grep -E "^${esc_base}-figma\.[0-9]+$" \
+                 | sed -E 's/.*-figma\.//' \
+                 | sort -n | tail -1 || true)"
+          next=$(( ${max:-0} + 1 ))
+          embed_label="${base}-figma.${next}"
+
+          sha="$(git rev-parse HEAD)"
+          {
+            echo "sha=$sha"
+            echo "base_version=$base"
+            echo "embed_label=$embed_label"
+          } >> "$GITHUB_OUTPUT"
+
+          echo "ref '$ref' @ ${sha:0:12}"
+          echo "upstream base: $base (host Bazel)"
+          echo "previous build counter for $base: ${max:-none}"
+          echo "=> embed label / tag: $embed_label"
+
   build:
     name: build ${{ matrix.platform }}
+    needs: setup
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 120
     strategy:
@@ -93,21 +165,30 @@ jobs:
             os: linux
             arch: x86_64
             bazelisk_arch: amd64
+            link_flags: ""
           - platform: linux-arm64
             runner: ubuntu-22.04-arm
             os: linux
             arch: arm64
             bazelisk_arch: arm64
+            # The aarch64 runner's GNU gold linker crashes building Bazel
+            # (internal error in try_fix_erratum_843419_optimized). Link with
+            # lld instead; this --linkopt is appended after the toolchain's
+            # default -fuse-ld=gold, and gcc honours the last -fuse-ld.
+            link_flags: "--linkopt=-fuse-ld=lld"
           - platform: darwin-arm64
             runner: macos-14
             os: darwin
             arch: arm64
             bazelisk_arch: arm64
+            link_flags: ""
     steps:
-      - name: Checkout ${{ inputs.ref }}
+      # Check out the exact commit resolved by `setup` so every platform builds
+      # an identical tree even if the branch moves mid-run.
+      - name: Checkout ${{ needs.setup.outputs.sha }}
         uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # v4.1.1
         with:
-          ref: ${{ inputs.ref }}
+          ref: ${{ needs.setup.outputs.sha }}
           fetch-depth: 0
 
       - name: Install Bazelisk
@@ -118,35 +199,34 @@ jobs:
           chmod +x /tmp/bazelisk
           sudo mv /tmp/bazelisk /usr/local/bin/bazel
 
-      - name: Derive upstream base version
-        id: base
+      - name: Install lld (aarch64 linker workaround)
+        if: matrix.os == 'linux' && matrix.arch == 'arm64'
         run: |
           set -euo pipefail
-          label='${{ inputs.embed_label }}'
-          base="${label%%-figma*}"
-          if [ "$base" = "$label" ] || [ -z "$base" ]; then
-            echo "::error::embed_label '$label' must contain '-figma' (e.g. 8.6.0-figma.1)"
-            exit 1
-          fi
-          echo "base_version=$base" >> "$GITHUB_OUTPUT"
-          echo "Building '$label' with upstream Bazel $base"
+          sudo apt-get update
+          sudo apt-get install -y lld
 
       - name: Build Bazel
         env:
           # Bazelisk reads this instead of the checked-in .bazelversion, so the
           # host Bazel used to build always matches the upstream base version.
-          USE_BAZEL_VERSION: ${{ steps.base.outputs.base_version }}
+          USE_BAZEL_VERSION: ${{ needs.setup.outputs.base_version }}
+          EMBED_LABEL: ${{ needs.setup.outputs.embed_label }}
+          LINK_FLAGS: ${{ matrix.link_flags }}
         run: |
           set -euo pipefail
           bazel build -c opt --stamp \
-            --embed_label '${{ inputs.embed_label }}' \
+            --embed_label "$EMBED_LABEL" \
             --incompatible_strict_action_env=true \
+            $LINK_FLAGS \
             //src:bazel //src:bazel_nojdk
 
       - name: Package artifacts
+        env:
+          EMBED_LABEL: ${{ needs.setup.outputs.embed_label }}
         run: |
           set -euo pipefail
-          label='${{ inputs.embed_label }}'
+          label="$EMBED_LABEL"
           os='${{ matrix.os }}'
           arch='${{ matrix.arch }}'
           mkdir -p dist
@@ -170,15 +250,15 @@ jobs:
 
   release:
     name: Publish GitHub release
-    needs: build
+    needs: [setup, build]
     runs-on: ubuntu-22.04
     permissions:
       contents: write
     steps:
-      - name: Checkout ${{ inputs.ref }}
+      - name: Checkout ${{ needs.setup.outputs.sha }}
         uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # v4.1.1
         with:
-          ref: ${{ inputs.ref }}
+          ref: ${{ needs.setup.outputs.sha }}
           fetch-depth: 0
 
       - name: Download all artifacts
@@ -188,11 +268,13 @@ jobs:
           merge-multiple: true
 
       - name: Generate release notes
-        id: notes
+        env:
+          EMBED_LABEL: ${{ needs.setup.outputs.embed_label }}
+          BASE_VERSION: ${{ needs.setup.outputs.base_version }}
         run: |
           set -euo pipefail
-          label='${{ inputs.embed_label }}'
-          base="${label%%-figma*}"
+          label="$EMBED_LABEL"
+          base="$BASE_VERSION"
           ref='${{ inputs.ref }}'
 
           # Fetch the upstream base tag so we can describe drift from upstream.
@@ -200,9 +282,7 @@ jobs:
           git fetch --no-tags upstream "refs/tags/${base}:refs/tags/upstream-${base}"
 
           upstream_sha="$(git rev-parse --short "upstream-${base}")"
-          target_sha="$(git rev-parse HEAD)"
           head_sha="$(git rev-parse --short HEAD)"
-          echo "target_sha=$target_sha" >> "$GITHUB_OUTPUT"
 
           # Header + upstream base. Escaped backticks here are literal markdown.
           {
@@ -247,14 +327,15 @@ jobs:
       - name: Create GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
+          EMBED_LABEL: ${{ needs.setup.outputs.embed_label }}
+          TARGET_SHA: ${{ needs.setup.outputs.sha }}
         run: |
           set -euo pipefail
-          label='${{ inputs.embed_label }}'
           # Tag == embed_label so the download URL matches what Bazelisk derives
           # from USE_BAZEL_VERSION=figma/<embed_label>. Target the exact commit
-          # we built, regardless of whether `ref` was a branch, tag, or sha.
-          gh release create "$label" \
-            --target '${{ steps.notes.outputs.target_sha }}' \
-            --title "Bazel $label" \
+          # the whole run was pinned to in the `setup` job.
+          gh release create "$EMBED_LABEL" \
+            --target "$TARGET_SHA" \
+            --title "Bazel $EMBED_LABEL" \
             --notes-file RELEASE_NOTES.md \
             dist/*
