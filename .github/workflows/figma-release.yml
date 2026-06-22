@@ -165,16 +165,23 @@ jobs:
             os: linux
             arch: x86_64
             bazelisk_arch: amd64
+            link_flags: ""
           - platform: linux-arm64
             runner: ubuntu-22.04-arm
             os: linux
             arch: arm64
             bazelisk_arch: arm64
+            # The aarch64 runner's GNU gold linker crashes building Bazel
+            # (internal error in try_fix_erratum_843419_optimized). Link with
+            # lld instead; this --linkopt is appended after the toolchain's
+            # default -fuse-ld=gold, and gcc honours the last -fuse-ld.
+            link_flags: "--linkopt=-fuse-ld=lld"
           - platform: darwin-arm64
             runner: macos-14
             os: darwin
             arch: arm64
             bazelisk_arch: arm64
+            link_flags: ""
     steps:
       # Check out the exact commit resolved by `setup` so every platform builds
       # an identical tree even if the branch moves mid-run.
@@ -192,17 +199,26 @@ jobs:
           chmod +x /tmp/bazelisk
           sudo mv /tmp/bazelisk /usr/local/bin/bazel
 
+      - name: Install lld (aarch64 linker workaround)
+        if: matrix.os == 'linux' && matrix.arch == 'arm64'
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y lld
+
       - name: Build Bazel
         env:
           # Bazelisk reads this instead of the checked-in .bazelversion, so the
           # host Bazel used to build always matches the upstream base version.
           USE_BAZEL_VERSION: ${{ needs.setup.outputs.base_version }}
           EMBED_LABEL: ${{ needs.setup.outputs.embed_label }}
+          LINK_FLAGS: ${{ matrix.link_flags }}
         run: |
           set -euo pipefail
           bazel build -c opt --stamp \
             --embed_label "$EMBED_LABEL" \
             --incompatible_strict_action_env=true \
+            $LINK_FLAGS \
             //src:bazel //src:bazel_nojdk
 
       - name: Package artifacts
