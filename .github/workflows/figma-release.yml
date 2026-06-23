@@ -207,22 +207,24 @@ jobs:
         run: |
           set -euo pipefail
           # Build (and package) entirely inside the old-glibc container. The
-          # repo is bind-mounted; env vars are forwarded with -e. Force the bfd
-          # linker so we never hit the aarch64 gold erratum-843419 crash.
+          # repo is bind-mounted; env vars are forwarded with -e. Link with lld:
+          # it supports the --start-lib/--end-lib flags Bazel emits (bfd on
+          # 20.04's binutils 2.34 does not) and avoids the aarch64 gold
+          # erratum-843419 crash. Linker choice does not affect glibc portability.
           docker run --rm \
             -v "$PWD":/workspace -w /workspace \
             -e USE_BAZEL_VERSION -e VERSION -e ARCH -e BAZELISK_ARCH \
             ubuntu:20.04 bash -euo pipefail -c '
               export DEBIAN_FRONTEND=noninteractive
               apt-get update
-              apt-get install -y build-essential python3 zip unzip curl ca-certificates
+              apt-get install -y build-essential lld python3 zip unzip curl ca-certificates
               curl -fsSL -o /usr/local/bin/bazel \
                 "https://github.com/bazelbuild/bazelisk/releases/download/v1.25.0/bazelisk-linux-${BAZELISK_ARCH}"
               chmod +x /usr/local/bin/bazel
               bazel build -c opt --stamp \
                 --embed_label "$VERSION" \
                 --incompatible_strict_action_env=true \
-                --linkopt=-fuse-ld=bfd \
+                --linkopt=-fuse-ld=lld \
                 //src:bazel //src:bazel_nojdk
               mkdir -p dist
               # Bazelisk asset names: bazel-<version>-<os>-<arch> and the nojdk
