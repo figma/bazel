@@ -215,15 +215,10 @@ jobs:
             ubuntu:20.04 bash -euo pipefail -c '
               export DEBIAN_FRONTEND=noninteractive
               apt-get update
-              # default-jdk is cheap insurance: modern Bazel builds //src:bazel
-              # with a downloaded remote JDK and the embedded JRE, but a bare
-              # image may still need a system JDK (older release scripts always
-              # installed one). build-essential gives the C/C++ toolchain.
-              apt-get install -y build-essential default-jdk python3 zip unzip git curl ca-certificates
+              apt-get install -y build-essential python3 zip unzip curl ca-certificates
               curl -fsSL -o /usr/local/bin/bazel \
                 "https://github.com/bazelbuild/bazelisk/releases/download/v1.25.0/bazelisk-linux-${BAZELISK_ARCH}"
               chmod +x /usr/local/bin/bazel
-              git config --global --add safe.directory /workspace
               bazel build -c opt --stamp \
                 --embed_label "$VERSION" \
                 --incompatible_strict_action_env=true \
