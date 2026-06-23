@@ -163,7 +163,14 @@ jobs:
           echo "previous figma build for $base: ${max:-none}"
           echo "=> release version / tag: $version"
 
-  build:
+  # Linux binaries are built INSIDE an old-glibc Ubuntu container (via
+  # `docker run`), not directly on the runner. GitHub's oldest hosted Ubuntu is
+  # 22.04 (glibc 2.35), which links symbols too new for older CI machines
+  # (e.g. `GLIBC_2.34 not found`). Building in ubuntu:20.04 (glibc 2.31) keeps
+  # the binary runnable on Ubuntu 20.04+/RHEL8+. All GitHub JS actions
+  # (checkout, upload-artifact) still run on the host, so the container never
+  # needs a node24-compatible userspace — only a C/C++ toolchain.
+  build-linux:
     name: build ${{ matrix.platform }}
     needs: setup
     runs-on: ${{ matrix.runner }}
@@ -174,29 +181,80 @@ jobs:
         include:
           - platform: linux-x86_64
             runner: ubuntu-22.04
-            os: linux
             arch: x86_64
             bazelisk_arch: amd64
-            link_flags: ""
           - platform: linux-arm64
             runner: ubuntu-22.04-arm
-            os: linux
             arch: arm64
             bazelisk_arch: arm64
-            # The aarch64 runner's GNU gold linker crashes building Bazel
-            # (internal error in try_fix_erratum_843419_optimized). Link with
-            # lld instead; this --linkopt is appended after the toolchain's
-            # default -fuse-ld=gold, and gcc honours the last -fuse-ld.
-            link_flags: "--linkopt=-fuse-ld=lld"
-          - platform: darwin-arm64
-            runner: macos-14
-            os: darwin
-            arch: arm64
-            bazelisk_arch: arm64
-            link_flags: ""
     steps:
       # Check out the exact commit resolved by `setup` so every platform builds
       # an identical tree even if the branch moves mid-run.
+      - name: Checkout ${{ needs.setup.outputs.sha }}
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ needs.setup.outputs.sha }}
+          fetch-depth: 0
+
+      - name: Build Bazel in ubuntu:20.04 (old glibc) and package
+        env:
+          # Bazelisk reads this instead of the checked-in .bazelversion, so the
+          # host Bazel used to build always matches the upstream base version.
+          USE_BAZEL_VERSION: ${{ needs.setup.outputs.base_version }}
+          VERSION: ${{ needs.setup.outputs.version }}
+          ARCH: ${{ matrix.arch }}
+          BAZELISK_ARCH: ${{ matrix.bazelisk_arch }}
+        run: |
+          set -euo pipefail
+          # Build (and package) entirely inside the old-glibc container. The
+          # repo is bind-mounted; env vars are forwarded with -e. Force the bfd
+          # linker so we never hit the aarch64 gold erratum-843419 crash.
+          docker run --rm \
+            -v "$PWD":/workspace -w /workspace \
+            -e USE_BAZEL_VERSION -e VERSION -e ARCH -e BAZELISK_ARCH \
+            ubuntu:20.04 bash -euo pipefail -c '
+              export DEBIAN_FRONTEND=noninteractive
+              apt-get update
+              apt-get install -y build-essential python3 zip unzip git curl ca-certificates
+              curl -fsSL -o /usr/local/bin/bazel \
+                "https://github.com/bazelbuild/bazelisk/releases/download/v1.25.0/bazelisk-linux-${BAZELISK_ARCH}"
+              chmod +x /usr/local/bin/bazel
+              git config --global --add safe.directory /workspace
+              bazel build -c opt --stamp \
+                --embed_label "$VERSION" \
+                --incompatible_strict_action_env=true \
+                --linkopt=-fuse-ld=bfd \
+                //src:bazel //src:bazel_nojdk
+              mkdir -p dist
+              # Bazelisk asset names: bazel-<version>-<os>-<arch> and the nojdk
+              # flavor uses a "bazel_nojdk-" prefix (BAZELISK_NOJDK consumers).
+              cp bazel-bin/src/bazel        "dist/bazel-${VERSION}-linux-${ARCH}"
+              cp bazel-bin/src/bazel_nojdk  "dist/bazel_nojdk-${VERSION}-linux-${ARCH}"
+              cd dist
+              for f in "bazel-${VERSION}-linux-${ARCH}" "bazel_nojdk-${VERSION}-linux-${ARCH}"; do
+                chmod +x "$f"
+                sha256sum "$f" > "$f.sha256"
+              done
+              # Files are created as root in the bind mount; make them readable
+              # by the runner user for the upload step.
+              chmod -R a+rwX /workspace/dist
+            '
+          ls -l dist
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ matrix.platform }}
+          path: dist/*
+          if-no-files-found: error
+
+  # macOS has no glibc, so the darwin binary is built natively on the runner.
+  build-darwin:
+    name: build darwin-arm64
+    needs: setup
+    runs-on: macos-14
+    timeout-minutes: 120
+    steps:
       - name: Checkout ${{ needs.setup.outputs.sha }}
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
@@ -207,30 +265,19 @@ jobs:
         run: |
           set -euo pipefail
           curl -fsSL -o /tmp/bazelisk \
-            "https://github.com/bazelbuild/bazelisk/releases/download/v1.25.0/bazelisk-${{ matrix.os }}-${{ matrix.bazelisk_arch }}"
+            "https://github.com/bazelbuild/bazelisk/releases/download/v1.25.0/bazelisk-darwin-arm64"
           chmod +x /tmp/bazelisk
           sudo mv /tmp/bazelisk /usr/local/bin/bazel
 
-      - name: Install lld (aarch64 linker workaround)
-        if: matrix.os == 'linux' && matrix.arch == 'arm64'
-        run: |
-          set -euo pipefail
-          sudo apt-get update
-          sudo apt-get install -y lld
-
       - name: Build Bazel
         env:
-          # Bazelisk reads this instead of the checked-in .bazelversion, so the
-          # host Bazel used to build always matches the upstream base version.
           USE_BAZEL_VERSION: ${{ needs.setup.outputs.base_version }}
           VERSION: ${{ needs.setup.outputs.version }}
-          LINK_FLAGS: ${{ matrix.link_flags }}
         run: |
           set -euo pipefail
           bazel build -c opt --stamp \
             --embed_label "$VERSION" \
             --incompatible_strict_action_env=true \
-            $LINK_FLAGS \
             //src:bazel //src:bazel_nojdk
 
       - name: Package artifacts
@@ -239,15 +286,11 @@ jobs:
         run: |
           set -euo pipefail
           label="$VERSION"
-          os='${{ matrix.os }}'
-          arch='${{ matrix.arch }}'
           mkdir -p dist
-          # Bazelisk asset names: bazel-<version>-<os>-<arch> and the nojdk
-          # flavor uses a "bazel_nojdk-" prefix (BAZELISK_NOJDK consumers).
-          cp bazel-bin/src/bazel        "dist/bazel-${label}-${os}-${arch}"
-          cp bazel-bin/src/bazel_nojdk  "dist/bazel_nojdk-${label}-${os}-${arch}"
+          cp bazel-bin/src/bazel        "dist/bazel-${label}-darwin-arm64"
+          cp bazel-bin/src/bazel_nojdk  "dist/bazel_nojdk-${label}-darwin-arm64"
           cd dist
-          for f in "bazel-${label}-${os}-${arch}" "bazel_nojdk-${label}-${os}-${arch}"; do
+          for f in "bazel-${label}-darwin-arm64" "bazel_nojdk-${label}-darwin-arm64"; do
             chmod +x "$f"
             shasum -a 256 "$f" > "$f.sha256"
           done
@@ -256,13 +299,13 @@ jobs:
       - name: Upload artifacts
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: ${{ matrix.platform }}
+          name: darwin-arm64
           path: dist/*
           if-no-files-found: error
 
   release:
     name: Publish GitHub release
-    needs: [setup, build]
+    needs: [setup, build-linux, build-darwin]
     runs-on: ubuntu-22.04
     permissions:
       contents: write
