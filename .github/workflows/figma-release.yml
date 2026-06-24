@@ -75,8 +75,18 @@
 #   BAZELISK_BASE_URL=<url>   mirror the binaries somewhere other than GitHub
 #                             (Bazelisk then appends `/<version>/<filename>`)
 #
+# -----------------------------------------------------------------------------
+# Verifying provenance
+# -----------------------------------------------------------------------------
+# Each binary carries a SLSA build-provenance attestation signed via this
+# workflow's OIDC identity. To prove a downloaded binary was built from these
+# sources by this workflow (not tampered with or rebuilt elsewhere):
+#
+#   gh attestation verify ./bazel-<version>-<os>-<arch> --repo figma/bazel
+#
 # Refs: https://github.com/bazelbuild/bazelisk#how-does-bazelisk-know-which-bazel-version-to-run
 #       https://github.com/bazelbuild/bazelisk (forks / naming conventions)
+#       https://docs.github.com/actions/security-guides/using-artifact-attestations
 # =============================================================================
 
 name: Figma Bazel Release
@@ -309,7 +319,9 @@ jobs:
     needs: [setup, build-linux, build-darwin]
     runs-on: ubuntu-22.04
     permissions:
-      contents: write
+      contents: write       # create the release
+      id-token: write       # OIDC token for build-provenance signing
+      attestations: write   # record the provenance attestation
     steps:
       - name: Checkout ${{ needs.setup.outputs.sha }}
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -322,6 +334,19 @@ jobs:
         with:
           path: dist
           merge-multiple: true
+
+      # SLSA build provenance: signs each binary's digest with an OIDC identity
+      # tying it to this repo, commit, and workflow run, so consumers can prove
+      # the binary was built from our sources via:
+      #   gh attestation verify <binary> --repo <owner>/bazel
+      # Attest only the binaries, not the .sha256 sidecar files.
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32 # v4.1.0
+        with:
+          subject-path: |
+            dist/bazel-*
+            dist/bazel_nojdk-*
+            !dist/*.sha256
 
       - name: Generate release notes
         env:
@@ -393,9 +418,20 @@ jobs:
           # Tag == version so the download URL matches what Bazelisk derives
           # from USE_BAZEL_VERSION=figma/<version>. Target the exact commit
           # the whole run was pinned to in the `setup` job.
+          #
+          # Create as a DRAFT with all assets attached, then flip to published.
+          # Immutable releases freeze a release the moment it is published, so
+          # assets must all be present while it is still a draft; publishing in
+          # a second step seals the (already complete) set of artifacts.
           gh release create "$VERSION" \
             --repo "$GITHUB_REPOSITORY" \
             --target "$TARGET_SHA" \
             --title "Bazel $VERSION" \
             --notes-file RELEASE_NOTES.md \
+            --draft \
             dist/*
+
+          # All artifacts are uploaded; publish (seal) the release.
+          gh release edit "$VERSION" \
+            --repo "$GITHUB_REPOSITORY" \
+            --draft=false
