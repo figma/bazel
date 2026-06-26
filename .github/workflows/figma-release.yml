@@ -46,6 +46,7 @@
 #
 #   bazel-8.6.0-figma2-linux-x86_64         bazel_nojdk-8.6.0-figma2-linux-x86_64
 #   bazel-8.6.0-figma2-linux-arm64          bazel_nojdk-8.6.0-figma2-linux-arm64
+#   bazel-8.6.0-figma2-darwin-x86_64        bazel_nojdk-8.6.0-figma2-darwin-x86_64
 #   bazel-8.6.0-figma2-darwin-arm64         bazel_nojdk-8.6.0-figma2-darwin-arm64
 #
 # -----------------------------------------------------------------------------
@@ -259,12 +260,34 @@ jobs:
           path: dist/*
           if-no-files-found: error
 
-  # macOS has no glibc, so the darwin binary is built natively on the runner.
+  # macOS has no glibc, so the darwin binaries are built natively on the runner
+  # for each architecture: arm64 on Apple-silicon macos-14, x86_64 on Intel
+  # macos-13. Bazelisk's darwin assets use the `amd64` arch token for x86_64
+  # (matching the linux convention), so we download per `bazelisk_arch` while the
+  # published asset name keeps Bazelisk's `<os>-<arch>` form (`darwin-x86_64`).
+  #
+  # NOTE: macos-13 is GitHub's last Intel-based hosted runner and is on a
+  # deprecation track. It works today, but once GitHub retires it the
+  # darwin-x86_64 leg will have to cross-compile from an Apple-silicon runner
+  # (e.g. macos-14 with `--cpu=darwin_x86_64` / `--macos_cpus=x86_64`) instead of
+  # building natively.
   build-darwin:
-    name: build darwin-arm64
+    name: build ${{ matrix.platform }}
     needs: setup
-    runs-on: macos-14
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: darwin-arm64
+            runner: macos-14
+            arch: arm64
+            bazelisk_arch: arm64
+          - platform: darwin-x86_64
+            runner: macos-13
+            arch: x86_64
+            bazelisk_arch: amd64
     steps:
       - name: Checkout ${{ needs.setup.outputs.sha }}
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -273,10 +296,12 @@ jobs:
           fetch-depth: 0
 
       - name: Install Bazelisk
+        env:
+          BAZELISK_ARCH: ${{ matrix.bazelisk_arch }}
         run: |
           set -euo pipefail
           curl -fsSL -o /tmp/bazelisk \
-            "https://github.com/bazelbuild/bazelisk/releases/download/v1.25.0/bazelisk-darwin-arm64"
+            "https://github.com/bazelbuild/bazelisk/releases/download/v1.25.0/bazelisk-darwin-${BAZELISK_ARCH}"
           chmod +x /tmp/bazelisk
           sudo mv /tmp/bazelisk /usr/local/bin/bazel
 
@@ -294,14 +319,15 @@ jobs:
       - name: Package artifacts
         env:
           VERSION: ${{ needs.setup.outputs.version }}
+          ARCH: ${{ matrix.arch }}
         run: |
           set -euo pipefail
           label="$VERSION"
           mkdir -p dist
-          cp bazel-bin/src/bazel        "dist/bazel-${label}-darwin-arm64"
-          cp bazel-bin/src/bazel_nojdk  "dist/bazel_nojdk-${label}-darwin-arm64"
+          cp bazel-bin/src/bazel        "dist/bazel-${label}-darwin-${ARCH}"
+          cp bazel-bin/src/bazel_nojdk  "dist/bazel_nojdk-${label}-darwin-${ARCH}"
           cd dist
-          for f in "bazel-${label}-darwin-arm64" "bazel_nojdk-${label}-darwin-arm64"; do
+          for f in "bazel-${label}-darwin-${ARCH}" "bazel_nojdk-${label}-darwin-${ARCH}"; do
             chmod +x "$f"
             shasum -a 256 "$f" > "$f.sha256"
           done
@@ -310,7 +336,7 @@ jobs:
       - name: Upload artifacts
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: darwin-arm64
+          name: ${{ matrix.platform }}
           path: dist/*
           if-no-files-found: error
 
