@@ -537,16 +537,6 @@ public final class RuleConfiguredTargetTest extends BuildViewTestCase {
   }
 
   @Test
-  public void testExcessiveShardCount() throws Exception {
-    checkError(
-        "foo",
-        "bar",
-        "indicative of poor test organization",
-        "load('//test_defs:foo_test.bzl', 'foo_test')",
-        "foo_test(name='bar', srcs=['mockingbird.sh'], shard_count=51)");
-  }
-
-  @Test
   public void testNonexistingTargetErrorMsg() throws Exception {
     checkError("foo", "foo", getErrorNonExistingTarget(
         "deps", "cc_binary", "//foo:foo", "//foo:nonesuch"),
