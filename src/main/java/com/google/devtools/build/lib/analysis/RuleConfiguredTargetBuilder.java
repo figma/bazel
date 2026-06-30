@@ -451,11 +451,6 @@ public final class RuleConfiguredTargetBuilder {
         && ruleContext.getRule().isAttributeValueExplicitlySpecified("shard_count")) {
       ruleContext.attributeError("shard_count", "Must not be negative.");
     }
-    if (explicitShardCount > 50) {
-      ruleContext.attributeError("shard_count",
-          "Having more than 50 shards is indicative of poor test organization. "
-          + "Please reduce the number of shards.");
-    }
     TestActionBuilder testActionBuilder =
         new TestActionBuilder(ruleContext)
             .setInstrumentedFiles(
