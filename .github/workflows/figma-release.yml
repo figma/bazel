@@ -260,21 +260,30 @@ jobs:
           path: dist/*
           if-no-files-found: error
 
-  # macOS has no glibc, so the darwin binaries are built on Apple-silicon
-  # macos-14 runners. arm64 builds natively; x86_64 cross-compiles via
-  # `--cpu=darwin_x86_64` / `--macos_cpus=x86_64`. Both legs therefore run the
-  # arm64 bootstrap Bazelisk (host arch), while the published asset name keeps
-  # Bazelisk's `<os>-<arch>` form (`darwin-x86_64`).
+  # macOS has no glibc, so the darwin binaries are built natively on the runner
+  # for each architecture: arm64 on Apple-silicon macos-14, x86_64 on the native
+  # Intel macos-15-intel runner. Bazelisk's darwin assets use the `amd64` arch
+  # token for x86_64 (matching the linux convention), so we download per
+  # `bazelisk_arch` while the published asset name keeps Bazelisk's
+  # `<os>-<arch>` form (`darwin-x86_64`).
   #
-  # Root cause: GitHub retired its last Intel-based hosted runner (`macos-13`),
-  # so the darwin-x86_64 leg can no longer build natively — a job pinned to
-  # `macos-13` sits "awaiting a runner" until GitHub's 24h queue ceiling kills
-  # it, which previously blocked the whole release (see run 28265340973). We
-  # cross-compile from macos-14 instead, exactly as the prior NOTE anticipated.
-  # See GitHub's macOS-13 runner removal: https://github.com/actions/runner-images/issues/13046
-  # TODO(aeagle): Revisit if GitHub ever restores Intel macOS runners (unlikely)
-  # or once we drop darwin-x86_64 support entirely; then this leg can build
-  # natively again or be removed.
+  # We deliberately build each arch NATIVELY rather than cross-compiling, the
+  # same way upstream Bazel does (its release CI uses separate native `macos`
+  # and `macos_arm64` Buildkite queues — see bazelbuild/continuous-integration
+  # buildkite/bazelci.py). Cross-compiling darwin-x86_64 from an arm64 runner
+  # via `--cpu=darwin_x86_64` fails: abseil's randen_hwaes applies `-maes`/
+  # `-msse4.1` to the arm64 exec-config tools (bazelbuild/bazel#14803), and
+  # Rosetta builds are slow/fragile.
+  #
+  # Root cause for the macos-15-intel pin: GitHub retired its previous Intel
+  # runner `macos-13` on 2025-12-04, so jobs pinned to it sit "awaiting a
+  # runner" until the 24h queue ceiling kills them, blocking the whole release
+  # (see figma/bazel run 28265340973). `macos-15-intel` is GitHub's replacement
+  # native x86_64 image: https://github.com/actions/runner-images/issues/13045
+  # TODO(aeagle): GitHub is sunsetting hosted x86_64 macOS around Aug 2027
+  # (https://github.com/actions/runner-images/issues/13046). Before then, either
+  # move this leg to a self-hosted Intel Mac (as upstream does) or drop
+  # darwin-x86_64 support.
   build-darwin:
     name: build ${{ matrix.platform }}
     needs: setup
@@ -288,14 +297,10 @@ jobs:
             runner: macos-14
             arch: arm64
             bazelisk_arch: arm64
-            bazel_cpu_flags: ""
           - platform: darwin-x86_64
-            runner: macos-14
+            runner: macos-15-intel
             arch: x86_64
-            # Bootstrap Bazelisk runs on the host (macos-14 = arm64), so we
-            # fetch the arm64 download even though the target is x86_64.
-            bazelisk_arch: arm64
-            bazel_cpu_flags: "--cpu=darwin_x86_64 --macos_cpus=x86_64"
+            bazelisk_arch: amd64
     steps:
       - name: Checkout ${{ needs.setup.outputs.sha }}
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -317,15 +322,11 @@ jobs:
         env:
           USE_BAZEL_VERSION: ${{ needs.setup.outputs.base_version }}
           VERSION: ${{ needs.setup.outputs.version }}
-          # Empty for the arm64 (native) leg; the x86_64 leg cross-compiles.
-          # Intentionally unquoted below so the two flags word-split.
-          BAZEL_CPU_FLAGS: ${{ matrix.bazel_cpu_flags }}
         run: |
           set -euo pipefail
           bazel build -c opt --stamp \
             --embed_label "$VERSION" \
             --incompatible_strict_action_env=true \
-            ${BAZEL_CPU_FLAGS} \
             //src:bazel //src:bazel_nojdk
 
       - name: Package artifacts
