@@ -98,10 +98,10 @@ public final class AnalysisUtils {
    */
   public static void checkWorkspaceStatusFileAccess(RuleContext ruleContext, String apiName)
       throws EvalException {
-    if (ruleContext
+    if (!ruleContext
         .getAnalysisEnvironment()
         .getStarlarkSemantics()
-        .getBool(BuildLanguageOptions.INCOMPATIBLE_ALLOW_STATUS_FILES_WITHOUT_STAMP)) {
+        .getBool(BuildLanguageOptions.INCOMPATIBLE_PREVENT_STATUS_FILES_WITHOUT_STAMP)) {
       return;
     }
     if (areWorkspaceStatusFilesAvailable(ruleContext)) {
@@ -109,7 +109,7 @@ public final class AnalysisUtils {
     }
     throw Starlark.errorf(
         "%s cannot be accessed without stamping when"
-            + " --incompatible_allow_status_files_without_stamp is disabled. Enable stamping with"
+            + " --incompatible_prevent_status_files_without_stamp is enabled. Enable stamping with"
             + " the stamp attribute or --stamp.",
         apiName);
   }

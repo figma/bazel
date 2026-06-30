@@ -258,7 +258,7 @@ EOF
 
 }
 
-function test_allow_status_files_without_stamp() {
+function test_prevent_status_files_without_stamp() {
   create_new_workspace
 
   cat > rules.bzl <<'EOF'
@@ -283,14 +283,14 @@ EOF
   # By default, status files are available without stamping.
   bazel build //:unstamped &> $TEST_log || fail "expected build to succeed by default"
 
-  # With the incompatible flag disabled, unstamped targets fail and point at the rule implementation.
-  bazel build --noincompatible_allow_status_files_without_stamp //:unstamped &> $TEST_log \
+  # With the incompatible flag enabled, unstamped targets fail and point at the rule implementation.
+  bazel build --incompatible_prevent_status_files_without_stamp //:unstamped &> $TEST_log \
     && fail "expected build to fail" || true
   expect_log "ctx.info_file cannot be accessed without stamping"
   expect_log "rules.bzl"
 
-  # Stamped targets succeed with the incompatible flag disabled.
-  bazel build --noincompatible_allow_status_files_without_stamp --stamp //:stamped \
+  # Stamped targets succeed with the incompatible flag enabled.
+  bazel build --incompatible_prevent_status_files_without_stamp --stamp //:stamped \
     &> $TEST_log || fail "expected stamped build to succeed"
 }
 

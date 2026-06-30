@@ -39,6 +39,7 @@ import com.google.devtools.build.lib.analysis.TransitiveInfoCollection;
 import com.google.devtools.build.lib.analysis.actions.BuildInfoFileWriteAction;
 import com.google.devtools.build.lib.analysis.actions.FileWriteAction;
 import com.google.devtools.build.lib.analysis.actions.StarlarkAction;
+import com.google.devtools.build.lib.analysis.config.CoreOptions;
 import com.google.devtools.build.lib.analysis.configuredtargets.FileConfiguredTarget;
 import com.google.devtools.build.lib.analysis.starlark.StarlarkExecGroupCollection;
 import com.google.devtools.build.lib.analysis.starlark.StarlarkRuleContext;
@@ -4105,7 +4106,7 @@ public final class StarlarkRuleContextTest extends BuildViewTestCase {
 
   @Test
   public void infoFile_errorsWithoutStampWhenPrevented() throws Exception {
-    setBuildLanguageOptions("--noincompatible_allow_status_files_without_stamp");
+    setBuildLanguageOptions("--incompatible_prevent_status_files_without_stamp");
     scratch.file(
         "test/rules.bzl",
         "def _impl(ctx):",
@@ -4125,12 +4126,12 @@ public final class StarlarkRuleContextTest extends BuildViewTestCase {
     checkError(
         "//test:target",
         "ctx.info_file cannot be accessed without stamping",
-        "incompatible_allow_status_files_without_stamp");
+        "incompatible_prevent_status_files_without_stamp");
   }
 
   @Test
   public void infoFile_allowedWithStampWhenPrevented() throws Exception {
-    setBuildLanguageOptions("--noincompatible_allow_status_files_without_stamp", "--stamp");
+    setBuildLanguageOptions("--incompatible_prevent_status_files_without_stamp", "--stamp");
     scratch.file(
         "test/rules.bzl",
         "def _impl(ctx):",
@@ -4148,5 +4149,48 @@ public final class StarlarkRuleContextTest extends BuildViewTestCase {
         "status_rule(name = 'target')");
 
     getConfiguredTarget("//test:target");
+  }
+
+  @Test
+  public void infoFile_allowedWhenStampEnabledByDependencyTransition() throws Exception {
+    setBuildLanguageOptions("--incompatible_prevent_status_files_without_stamp");
+    useConfiguration("--nostamp");
+    scratch.file(
+        "test/rules.bzl",
+        "def _stamp_transition_impl(settings, _attr):",
+        "  return {'//command_line_option:stamp': not settings['//command_line_option:stamp']}",
+        "stamp_transition = transition(",
+        "    implementation = _stamp_transition_impl,",
+        "    inputs = ['//command_line_option:stamp'],",
+        "    outputs = ['//command_line_option:stamp'],",
+        ")",
+        "def _stamped_dep_impl(ctx):",
+        "  ctx.actions.write(ctx.outputs.out, ctx.info_file.path)",
+        "  return DefaultInfo(files = depset([ctx.outputs.out]))",
+        "stamped_dep = rule(",
+        "  implementation = _stamped_dep_impl,",
+        "  outputs = {\"out\": \"%{name}.txt\"},",
+        ")",
+        "def _consumer_impl(ctx):",
+        "  return DefaultInfo()",
+        "consumer = rule(",
+        "  implementation = _consumer_impl,",
+        "  attrs = {\"dep\": attr.label(cfg = stamp_transition)},",
+        ")",
+        testingRuleDefinition);
+    scratch.file(
+        "test/BUILD",
+        "load(':rules.bzl', 'consumer', 'stamped_dep')",
+        "stamped_dep(name = 'dep')",
+        "consumer(name = 'top', dep = ':dep')");
+
+    ConfiguredTarget top = getConfiguredTarget("//test:top");
+    ConfiguredTarget dep = Iterables.getOnlyElement(getPrerequisites(top, "dep"));
+
+    assertThat(getConfiguration(top).getOptions().get(CoreOptions.class).stampBinaries)
+        .isFalse();
+    assertThat(getConfiguration(dep).getOptions().get(CoreOptions.class).stampBinaries)
+        .isTrue();
+    assertThat(getFilesToBuild(dep)).isNotEmpty();
   }
 }
