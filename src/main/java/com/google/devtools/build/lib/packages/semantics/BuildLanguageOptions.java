@@ -826,20 +826,6 @@ public final class BuildLanguageOptions extends OptionsBase {
   public boolean incompatibleSimplifyUnconditionalSelectsInRuleAttrs;
 
   @Option(
-      name = "incompatible_prevent_status_files_without_stamp",
-      defaultValue = "false",
-      documentationCategory = OptionDocumentationCategory.STARLARK_SEMANTICS,
-      effectTags = {OptionEffectTag.LOADING_AND_ANALYSIS},
-      metadataTags = {OptionMetadataTag.INCOMPATIBLE_CHANGE},
-      help =
-          "If enabled, ctx.info_file and ctx.version_file (and the corresponding"
-              + " ctx.actions.transform_*_file functions) are only available when stamping is"
-              + " enabled for the target (via the stamp attribute or --stamp). Otherwise, rule"
-              + " implementations that access these files fail during analysis. See"
-              + " https://github.com/bazelbuild/bazel/issues/14341.")
-  public abstract boolean getIncompatiblePreventStatusFilesWithoutStamp();
-
-  @Option(
       name = "experimental_enable_starlark_set",
       defaultValue = "true",
       documentationCategory = OptionDocumentationCategory.STARLARK_SEMANTICS,
