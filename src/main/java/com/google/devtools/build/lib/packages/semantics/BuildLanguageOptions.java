@@ -587,6 +587,20 @@ public abstract class BuildLanguageOptions extends OptionsBase {
               + " 'cc_binary'.")
   public abstract boolean getAddGoExecGroupsToBinaryRules();
 
+  @Option(
+      name = "incompatible_prevent_status_files_without_stamp",
+      defaultValue = "false",
+      documentationCategory = OptionDocumentationCategory.STARLARK_SEMANTICS,
+      effectTags = {OptionEffectTag.LOADING_AND_ANALYSIS},
+      metadataTags = {OptionMetadataTag.INCOMPATIBLE_CHANGE},
+      help =
+          "If enabled, ctx.info_file and ctx.version_file (and the corresponding"
+              + " ctx.actions.transform_*_file functions) are only available when stamping is"
+              + " enabled for the target (via the stamp attribute or --stamp). Otherwise, rule"
+              + " implementations that access these files fail during analysis. See"
+              + " https://github.com/bazelbuild/bazel/issues/14341.")
+  public abstract boolean getIncompatiblePreventStatusFilesWithoutStamp();
+
   // remove after Bazel LTS in Nov 2023
   @Option(
       name = "incompatible_fail_on_unknown_attributes",
@@ -969,6 +983,9 @@ public abstract class BuildLanguageOptions extends OptionsBase {
             .set(INCOMPATIBLE_DISABLE_TRANSITIONS_OPTIONS, getIncompatibleDisableTransitionsOn())
             .setBool(ADD_GO_EXEC_GROUPS_TO_BINARY_RULES, getAddGoExecGroupsToBinaryRules())
             .setBool(
+                INCOMPATIBLE_PREVENT_STATUS_FILES_WITHOUT_STAMP,
+                getIncompatiblePreventStatusFilesWithoutStamp())
+            .setBool(
                 INCOMPATIBLE_FAIL_ON_UNKNOWN_ATTRIBUTES, getIncompatibleFailOnUnknownAttributes())
             .setBool(
                 INCOMPATIBLE_ENABLE_PROTO_TOOLCHAIN_RESOLUTION,
@@ -1130,6 +1147,8 @@ public abstract class BuildLanguageOptions extends OptionsBase {
       "+incompatible_always_check_depset_elements";
   public static final String INCOMPATIBLE_CHECK_EXTERNAL_REPO_SOURCE_DIR_PACKAGE_BOUNDARY =
       "-incompatible_check_external_repo_source_dir_package_boundary";
+  public static final String INCOMPATIBLE_PREVENT_STATUS_FILES_WITHOUT_STAMP =
+      "-incompatible_prevent_status_files_without_stamp";
 
   // Note that INCOMPATIBLE_DISALLOW_EMPTY_GLOB differs in Google and in OSS Bazel.
   public static final String INCOMPATIBLE_DISALLOW_EMPTY_GLOB = "+incompatible_disallow_empty_glob";
