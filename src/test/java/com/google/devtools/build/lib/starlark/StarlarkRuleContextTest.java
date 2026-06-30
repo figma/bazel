@@ -4081,4 +4081,72 @@ public final class StarlarkRuleContextTest extends BuildViewTestCase {
         "    template = ':template.txt',",
         ")");
   }
+
+  @Test
+  public void infoFile_allowedWithoutStampByDefault() throws Exception {
+    scratch.file(
+        "test/rules.bzl",
+        "def _impl(ctx):",
+        "  ctx.actions.write(ctx.outputs.out, ctx.info_file.path)",
+        "  return DefaultInfo(files = depset([ctx.outputs.out]))",
+        "status_rule = rule(",
+        "  implementation = _impl,",
+        "  attrs = {\"stamp\": attr.int(default = -1)},",
+        "  outputs = {\"out\": \"%{name}.txt\"},",
+        ")",
+        testingRuleDefinition);
+    scratch.file(
+        "test/BUILD",
+        "load(':rules.bzl', 'status_rule')",
+        "status_rule(name = 'target')");
+
+    getConfiguredTarget("//test:target");
+  }
+
+  @Test
+  public void infoFile_errorsWithoutStampWhenPrevented() throws Exception {
+    setBuildLanguageOptions("--noincompatible_allow_status_files_without_stamp");
+    scratch.file(
+        "test/rules.bzl",
+        "def _impl(ctx):",
+        "  ctx.actions.write(ctx.outputs.out, ctx.info_file.path)",
+        "  return DefaultInfo(files = depset([ctx.outputs.out]))",
+        "status_rule = rule(",
+        "  implementation = _impl,",
+        "  attrs = {\"stamp\": attr.int(default = -1)},",
+        "  outputs = {\"out\": \"%{name}.txt\"},",
+        ")",
+        testingRuleDefinition);
+    scratch.file(
+        "test/BUILD",
+        "load(':rules.bzl', 'status_rule')",
+        "status_rule(name = 'target')");
+
+    checkError(
+        "//test:target",
+        "ctx.info_file cannot be accessed without stamping",
+        "incompatible_allow_status_files_without_stamp");
+  }
+
+  @Test
+  public void infoFile_allowedWithStampWhenPrevented() throws Exception {
+    setBuildLanguageOptions("--noincompatible_allow_status_files_without_stamp", "--stamp");
+    scratch.file(
+        "test/rules.bzl",
+        "def _impl(ctx):",
+        "  ctx.actions.write(ctx.outputs.out, ctx.info_file.path)",
+        "  return DefaultInfo(files = depset([ctx.outputs.out]))",
+        "status_rule = rule(",
+        "  implementation = _impl,",
+        "  attrs = {\"stamp\": attr.int(default = 1)},",
+        "  outputs = {\"out\": \"%{name}.txt\"},",
+        ")",
+        testingRuleDefinition);
+    scratch.file(
+        "test/BUILD",
+        "load(':rules.bzl', 'status_rule')",
+        "status_rule(name = 'target')");
+
+    getConfiguredTarget("//test:target");
+  }
 }

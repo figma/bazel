@@ -681,6 +681,20 @@ public final class BuildLanguageOptions extends OptionsBase {
               + "from the top level target instead")
   public boolean incompatibleDisableObjcLibraryTransition;
 
+  @Option(
+      name = "incompatible_allow_status_files_without_stamp",
+      defaultValue = "true",
+      documentationCategory = OptionDocumentationCategory.STARLARK_SEMANTICS,
+      effectTags = {OptionEffectTag.LOADING_AND_ANALYSIS},
+      metadataTags = {OptionMetadataTag.INCOMPATIBLE_CHANGE},
+      help =
+          "If true, ctx.info_file and ctx.version_file (and the corresponding"
+              + " ctx.actions.transform_*_file functions) are always available. If false, they are"
+              + " only available when stamping is enabled for the target (via the stamp attribute"
+              + " or --stamp); otherwise, rule implementations that access these files fail during"
+              + " analysis.")
+  public boolean incompatibleAllowStatusFilesWithoutStamp;
+
   // remove after Bazel LTS in Nov 2023
   @Option(
       name = "incompatible_fail_on_unknown_attributes",
@@ -842,6 +856,9 @@ public final class BuildLanguageOptions extends OptionsBase {
             .setBool(
                 INCOMPATIBLE_DISABLE_OBJC_LIBRARY_TRANSITION,
                 incompatibleDisableObjcLibraryTransition)
+            .setBool(
+                INCOMPATIBLE_ALLOW_STATUS_FILES_WITHOUT_STAMP,
+                incompatibleAllowStatusFilesWithoutStamp)
             .setBool(INCOMPATIBLE_FAIL_ON_UNKNOWN_ATTRIBUTES, incompatibleFailOnUnknownAttributes)
             .setBool(
                 INCOMPATIBLE_ENABLE_PROTO_TOOLCHAIN_RESOLUTION,
@@ -943,6 +960,8 @@ public final class BuildLanguageOptions extends OptionsBase {
       "+incompatible_objc_provider_remove_linking_info";
   public static final String INCOMPATIBLE_DISABLE_OBJC_LIBRARY_TRANSITION =
       "+incompatible_disable_objc_library_transition";
+  public static final String INCOMPATIBLE_ALLOW_STATUS_FILES_WITHOUT_STAMP =
+      "+incompatible_allow_status_files_without_stamp";
   public static final String INCOMPATIBLE_FAIL_ON_UNKNOWN_ATTRIBUTES =
       "+incompatible_fail_on_unknown_attributes";
   public static final String INCOMPATIBLE_ENABLE_PROTO_TOOLCHAIN_RESOLUTION =
