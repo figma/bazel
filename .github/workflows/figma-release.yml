@@ -261,16 +261,29 @@ jobs:
           if-no-files-found: error
 
   # macOS has no glibc, so the darwin binaries are built natively on the runner
-  # for each architecture: arm64 on Apple-silicon macos-14, x86_64 on Intel
-  # macos-13. Bazelisk's darwin assets use the `amd64` arch token for x86_64
-  # (matching the linux convention), so we download per `bazelisk_arch` while the
-  # published asset name keeps Bazelisk's `<os>-<arch>` form (`darwin-x86_64`).
+  # for each architecture: arm64 on Apple-silicon macos-14, x86_64 on the native
+  # Intel macos-15-intel runner. Bazelisk's darwin assets use the `amd64` arch
+  # token for x86_64 (matching the linux convention), so we download per
+  # `bazelisk_arch` while the published asset name keeps Bazelisk's
+  # `<os>-<arch>` form (`darwin-x86_64`).
   #
-  # NOTE: macos-13 is GitHub's last Intel-based hosted runner and is on a
-  # deprecation track. It works today, but once GitHub retires it the
-  # darwin-x86_64 leg will have to cross-compile from an Apple-silicon runner
-  # (e.g. macos-14 with `--cpu=darwin_x86_64` / `--macos_cpus=x86_64`) instead of
-  # building natively.
+  # We deliberately build each arch NATIVELY rather than cross-compiling, the
+  # same way upstream Bazel does (its release CI uses separate native `macos`
+  # and `macos_arm64` Buildkite queues — see bazelbuild/continuous-integration
+  # buildkite/bazelci.py). Cross-compiling darwin-x86_64 from an arm64 runner
+  # via `--cpu=darwin_x86_64` fails: abseil's randen_hwaes applies `-maes`/
+  # `-msse4.1` to the arm64 exec-config tools (bazelbuild/bazel#14803), and
+  # Rosetta builds are slow/fragile.
+  #
+  # Root cause for the macos-15-intel pin: GitHub retired its previous Intel
+  # runner `macos-13` on 2025-12-04, so jobs pinned to it sit "awaiting a
+  # runner" until the 24h queue ceiling kills them, blocking the whole release
+  # (see figma/bazel run 28265340973). `macos-15-intel` is GitHub's replacement
+  # native x86_64 image: https://github.com/actions/runner-images/issues/13045
+  # TODO(aeagle): GitHub is sunsetting hosted x86_64 macOS around Aug 2027
+  # (https://github.com/actions/runner-images/issues/13046). Before then, either
+  # move this leg to a self-hosted Intel Mac (as upstream does) or drop
+  # darwin-x86_64 support.
   build-darwin:
     name: build ${{ matrix.platform }}
     needs: setup
@@ -285,7 +298,7 @@ jobs:
             arch: arm64
             bazelisk_arch: arm64
           - platform: darwin-x86_64
-            runner: macos-13
+            runner: macos-15-intel
             arch: x86_64
             bazelisk_arch: amd64
     steps:
