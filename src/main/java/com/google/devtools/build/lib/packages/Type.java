@@ -260,6 +260,13 @@ public abstract class Type<T> {
   /** The type of a Starlark integer in the signed 32-bit range. */
   @SerializationConstant public static final Type<StarlarkInt> INTEGER = new IntegerType();
 
+  /**
+   * The type of the {@code flaky} test attribute: a non-negative int counting additional retry
+   * attempts, composed with {@code --flaky_test_attempts}. Also accepts legacy boolean values.
+   */
+  @SerializationConstant
+  public static final Type<StarlarkInt> FLAKY_TEST_RETRIES = new FlakyTestRetriesType();
+
   /** The type of a string which interns the instance with String#intern. */
   @SerializationConstant
   public static final Type<String> STRING = new StringType(/* internString= */ true);
@@ -383,6 +390,60 @@ public abstract class Type<T> {
       // remains in the signed 32-bit range. This means that
       // s=select(0x7fffffff); s+s may yield a negative result.
       return StarlarkInt.of(sum.truncateToInt());
+    }
+  }
+
+  private static final class FlakyTestRetriesType extends Type<StarlarkInt> {
+    @Override
+    public StarlarkInt cast(Object value) {
+      return (StarlarkInt) value;
+    }
+
+    @Override
+    public StarlarkInt getDefaultValue() {
+      return StarlarkInt.of(0);
+    }
+
+    @Override
+    public void visitLabels(LabelVisitor visitor, StarlarkInt value, @Nullable Attribute context) {}
+
+    @Override
+    public String toString() {
+      return "int";
+    }
+
+    @Override
+    public StarlarkInt convert(Object x, Object what, LabelConverter labelConverter)
+        throws ConversionException {
+      if (x instanceof Boolean) {
+        return StarlarkInt.of((Boolean) x ? 1 : 0);
+      }
+      if (x instanceof StarlarkInt) {
+        StarlarkInt i = (StarlarkInt) x;
+        try {
+          if (i.toIntUnchecked() < 0) {
+            throw new ConversionException("non-negative int", x, what);
+          }
+        } catch (
+            @SuppressWarnings("UnusedException")
+            IllegalArgumentException ex) {
+          String prefix = what != null ? ("for " + what + ", ") : "";
+          throw new ConversionException(
+              String.format("%sgot %s, want value in signed 32-bit range", prefix, i));
+        }
+        return i;
+      }
+      throw new ConversionException(this, x, what);
+    }
+
+    @Override
+    public Set<String> toTagSet(Object value, String name) {
+      if (value == null) {
+        String msg = "Illegal tag conversion from null on Attribute " + name + ".";
+        throw new IllegalStateException(msg);
+      }
+      int retries = ((StarlarkInt) value).toIntUnchecked();
+      return retries == 0 ? ImmutableSet.of("noflaky") : ImmutableSet.of("flaky");
     }
   }
 

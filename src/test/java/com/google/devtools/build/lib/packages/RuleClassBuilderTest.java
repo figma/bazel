@@ -85,7 +85,7 @@ public class RuleClassBuilderTest extends PackageLoadingTestCase {
             .add(attr("tags", STRING_LIST))
             .add(attr("size", STRING).value("medium"))
             .add(attr("timeout", STRING))
-            .add(attr("flaky", BOOLEAN).value(false))
+            .add(attr("flaky", Type.FLAKY_TEST_RETRIES).value(StarlarkInt.of(0)))
             .add(attr("shard_count", INTEGER).value(StarlarkInt.of(-1)))
             .add(attr("local", BOOLEAN))
             .build();

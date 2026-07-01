@@ -68,7 +68,7 @@ public class TestTargetProperties {
   private final TestTimeout timeout;
   private final List<String> tags;
   private final boolean isRemotable;
-  private final boolean isFlaky;
+  private final int flakyRetries;
   private final boolean isExternal;
   private final String language;
   private final ImmutableMap<String, String> executionInfo;
@@ -87,7 +87,8 @@ public class TestTargetProperties {
     tags = ruleContext.attributes().get("tags", Types.STRING_LIST);
 
     // We need to use method on ruleConfiguredTarget to perform validation.
-    isFlaky = ruleContext.attributes().get("flaky", Type.BOOLEAN);
+    flakyRetries =
+        ruleContext.attributes().get("flaky", Type.FLAKY_TEST_RETRIES).toIntUnchecked();
     isExternal = TargetUtils.isExternalTestRule(rule);
 
     Map<String, String> executionInfo = Maps.newLinkedHashMap();
@@ -148,8 +149,12 @@ public class TestTargetProperties {
     return isRemotable;
   }
 
+  public int getFlakyRetries() {
+    return flakyRetries;
+  }
+
   public boolean isFlaky() {
-    return isFlaky;
+    return flakyRetries > 0;
   }
 
   public boolean isExternal() {

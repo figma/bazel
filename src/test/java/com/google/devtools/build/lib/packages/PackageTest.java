@@ -50,7 +50,7 @@ public class PackageTest {
               Attribute.attr("tags", Types.STRING_LIST).nonconfigurable("tags aren't").build())
           .addAttribute(Attribute.attr("size", Type.STRING).nonconfigurable("size isn't").build())
           .addAttribute(Attribute.attr("timeout", Type.STRING).build())
-          .addAttribute(Attribute.attr("flaky", Type.BOOLEAN).build())
+          .addAttribute(Attribute.attr("flaky", Type.FLAKY_TEST_RETRIES).build())
           .addAttribute(Attribute.attr("shard_count", Type.INTEGER).build())
           .addAttribute(Attribute.attr("local", Type.BOOLEAN).build())
           .setConfiguredTargetFunction(mock(StarlarkCallable.class))

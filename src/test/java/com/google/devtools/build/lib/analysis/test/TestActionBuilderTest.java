@@ -267,28 +267,52 @@ public class TestActionBuilderTest extends BuildViewTestCase {
             srcs = ["a.sh"],
             flaky = 1,
         )
+
+        foo_test(
+            name = "flaky_true_test",
+            srcs = ["a.sh"],
+            flaky = True,
+        )
+
+        foo_test(
+            name = "very_flaky_test",
+            srcs = ["a.sh"],
+            flaky = 2,
+        )
         """);
     Artifact testStatus = Iterables.getOnlyElement(getTestStatusArtifacts("//flaky:good_test"));
     assertThat(testStatus).isNotNull();
     TestRunnerAction action = (TestRunnerAction) getGeneratingAction(testStatus);
+    assertThat(action.getTestProperties().getFlakyRetries()).isEqualTo(0);
     assertThat(action.getTestProperties().isFlaky()).isFalse();
 
     testStatus = Iterables.getOnlyElement(getTestStatusArtifacts("//flaky:flaky_test"));
     assertThat(testStatus).isNotNull();
     action = (TestRunnerAction) getGeneratingAction(testStatus);
+    assertThat(action.getTestProperties().getFlakyRetries()).isEqualTo(1);
     assertThat(action.getTestProperties().isFlaky()).isTrue();
+
+    testStatus = Iterables.getOnlyElement(getTestStatusArtifacts("//flaky:flaky_true_test"));
+    assertThat(testStatus).isNotNull();
+    action = (TestRunnerAction) getGeneratingAction(testStatus);
+    assertThat(action.getTestProperties().getFlakyRetries()).isEqualTo(1);
+
+    testStatus = Iterables.getOnlyElement(getTestStatusArtifacts("//flaky:very_flaky_test"));
+    assertThat(testStatus).isNotNull();
+    action = (TestRunnerAction) getGeneratingAction(testStatus);
+    assertThat(action.getTestProperties().getFlakyRetries()).isEqualTo(2);
   }
 
   @Test
-  public void testIllegalBooleanFlakySetting() throws Exception {
+  public void testIllegalNegativeFlakySetting() throws Exception {
     checkError(
         "flaky",
         "bad_test",
-        "expected one of [False, True, 0, 1]",
+        "expected non-negative int",
         "load('//test_defs:foo_test.bzl', 'foo_test')",
         "foo_test(name = 'bad_test',",
         "        srcs = ['a.sh'],",
-        "        flaky = 2)");
+        "        flaky = -1)");
   }
 
   @Test

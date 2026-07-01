@@ -276,40 +276,44 @@ public abstract class TestStrategy implements TestActionContext {
   }
 
   /**
-   * Returns the number of attempts specific test action can be retried.
+   * Returns the number of attempts for the given test action.
    *
-   * <p>For rules with "flaky = 1" attribute, this method will return 3 unless --flaky_test_attempts
-   * option is given and specifies another value.
+   * <p>When {@code --flaky_test_attempts} resolves to a numeric value for this target, that value
+   * is the total number of attempts for all tests (including {@code flaky = 0}). When the flag is
+   * {@code default}, non-flaky targets run once and flaky targets run {@code 1 + flaky} times.
    */
   @VisibleForTesting /* protected */
   public int getTestAttempts(TestRunnerAction action) {
-    return action.getTestProperties().isFlaky()
-        ? getTestAttemptsForFlakyTest(action)
-        : getTestAttempts(action, /* defaultTestAttempts= */ 1);
+    return computeTestAttempts(
+        action.getTestProperties().getFlakyRetries(),
+        executionOptions,
+        action.getOwner().getLabel());
   }
 
-  private int getTestAttempts(TestRunnerAction action, int defaultTestAttempts) {
-    Label testLabel = action.getOwner().getLabel();
-    return getTestAttemptsPerLabel(executionOptions, testLabel, defaultTestAttempts);
+  @VisibleForTesting
+  static int computeTestAttempts(int flakyRetries, ExecutionOptions options, Label label) {
+    String flagValue = resolveFlakyTestAttemptsFlagValue(options, label);
+    if (!"default".equals(flagValue)) {
+      return Math.min(MAX_TEST_ATTEMPTS, Integer.parseInt(flagValue));
+    }
+    if (flakyRetries == 0) {
+      return 1;
+    }
+    return Math.min(MAX_TEST_ATTEMPTS, 1 + flakyRetries);
   }
 
-  public int getTestAttemptsForFlakyTest(TestRunnerAction action) {
-    return getTestAttempts(action, /* defaultTestAttempts= */ 3);
-  }
+  private static final int MAX_TEST_ATTEMPTS = 10;
 
-  private static int getTestAttemptsPerLabel(
-      ExecutionOptions options, Label label, int defaultTestAttempts) {
-    // Check from the last provided, so that the last option provided takes precedence.
+  private static String resolveFlakyTestAttemptsFlagValue(ExecutionOptions options, Label label) {
+    if (options.testAttempts == null || options.testAttempts.isEmpty()) {
+      return "default";
+    }
     for (PerLabelOptions perLabelAttempts : Lists.reverse(options.testAttempts)) {
       if (perLabelAttempts.isIncluded(label)) {
-        String attempts = Iterables.getOnlyElement(perLabelAttempts.getOptions());
-        if ("default".equals(attempts)) {
-          return defaultTestAttempts;
-        }
-        return Integer.parseInt(attempts);
+        return Iterables.getOnlyElement(perLabelAttempts.getOptions());
       }
     }
-    return defaultTestAttempts;
+    return "default";
   }
 
   /**

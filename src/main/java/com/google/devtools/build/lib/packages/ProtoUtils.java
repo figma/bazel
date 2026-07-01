@@ -30,6 +30,7 @@ import static com.google.devtools.build.lib.packages.BuildType.OUTPUT;
 import static com.google.devtools.build.lib.packages.BuildType.OUTPUT_LIST;
 import static com.google.devtools.build.lib.packages.BuildType.TRISTATE;
 import static com.google.devtools.build.lib.packages.Type.BOOLEAN;
+import static com.google.devtools.build.lib.packages.Type.FLAKY_TEST_RETRIES;
 import static com.google.devtools.build.lib.packages.Type.INTEGER;
 import static com.google.devtools.build.lib.packages.Type.STRING;
 import static com.google.devtools.build.lib.packages.Type.STRING_NO_INTERN;
@@ -48,6 +49,7 @@ public class ProtoUtils {
   private static final ImmutableMap<Type<?>, Discriminator> TYPE_MAP =
       new ImmutableMap.Builder<Type<?>, Discriminator>()
           .put(INTEGER, Discriminator.INTEGER)
+          .put(FLAKY_TEST_RETRIES, Discriminator.INTEGER)
           .put(DISTRIBUTIONS, Discriminator.DISTRIBUTION_SET)
           .put(LABEL, Discriminator.LABEL)
           // NODEP_LABEL attributes are not really strings. This is implemented

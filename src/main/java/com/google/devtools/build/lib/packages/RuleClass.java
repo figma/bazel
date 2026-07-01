@@ -684,7 +684,7 @@ public class RuleClass implements RuleClassData {
             attr("tags", Types.STRING_LIST).build(),
             attr("size", Type.STRING).build(),
             attr("timeout", Type.STRING).build(),
-            attr("flaky", Type.BOOLEAN).build(),
+            attr("flaky", Type.FLAKY_TEST_RETRIES).build(),
             attr("shard_count", Type.INTEGER).build(),
             attr("local", Type.BOOLEAN).build());
 
