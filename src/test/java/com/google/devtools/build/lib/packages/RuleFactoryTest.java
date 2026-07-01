@@ -262,7 +262,7 @@ public final class RuleFactoryTest extends PackageLoadingTestCase {
       if (TargetUtils.isTestRule(rule)) {
         assertAttr(ruleClass, "tags", Types.STRING_LIST);
         assertAttr(ruleClass, "size", Type.STRING);
-        assertAttr(ruleClass, "flaky", Type.BOOLEAN);
+        assertAttr(ruleClass, "flaky", Type.FLAKY_TEST_RETRIES);
         assertAttr(ruleClass, "shard_count", Type.INTEGER);
         assertAttr(ruleClass, "local", Type.BOOLEAN);
       }

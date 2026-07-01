@@ -123,6 +123,27 @@ public class TypeTest {
   }
 
   @Test
+  public void testFlakyTestRetries() throws Exception {
+    assertThat(Type.FLAKY_TEST_RETRIES.convert(StarlarkInt.of(0), null)).isEqualTo(StarlarkInt.of(0));
+    assertThat(Type.FLAKY_TEST_RETRIES.convert(StarlarkInt.of(2), null)).isEqualTo(StarlarkInt.of(2));
+    assertThat(Type.FLAKY_TEST_RETRIES.convert(true, null)).isEqualTo(StarlarkInt.of(1));
+    assertThat(Type.FLAKY_TEST_RETRIES.convert(false, null)).isEqualTo(StarlarkInt.of(0));
+    assertThat(Type.FLAKY_TEST_RETRIES.toTagSet(StarlarkInt.of(0), "flaky"))
+        .containsExactly("noflaky");
+    assertThat(Type.FLAKY_TEST_RETRIES.toTagSet(StarlarkInt.of(2), "flaky"))
+        .containsExactly("flaky");
+  }
+
+  @Test
+  public void testFlakyTestRetriesRejectsNegativeValues() throws Exception {
+    Type.ConversionException e =
+        assertThrows(
+            Type.ConversionException.class,
+            () -> Type.FLAKY_TEST_RETRIES.convert(StarlarkInt.of(-1), null));
+    assertThat(e).hasMessageThat().isEqualTo("expected non-negative int, but got -1 (int)");
+  }
+
+  @Test
   public void testNonBoolean() throws Exception {
     Type.ConversionException e =
         assertThrows(

@@ -1,13 +1,17 @@
-<p>Boolean; <a href="#configurable-attributes">nonconfigurable</a>;
-  default is <code>False</code></p>
+<p>Integer; <a href="#configurable-attributes">nonconfigurable</a>;
+  default is <code>0</code>. Legacy boolean values are accepted (<code>True</code>
+  is treated as <code>1</code>, <code>False</code> as <code>0</code>).</p>
 
 <p>
-Marks test as flaky.
+Declares how many additional retry attempts this flaky test should receive
+when <code>--flaky_test_attempts</code> is <code>default</code>. A value of
+<code>0</code> means the test is not flaky and runs once unless a numeric
+<code>--flaky_test_attempts</code> value overrides all targets. For example,
+with the default flag, <code>flaky = 1</code> runs the test twice and
+<code>flaky = 2</code> runs it three times.
 </p>
 
 <p>
-If set, executes the test up to three times, marking it as failed only if it
-fails each time. By default, this attribute is set to False and the test is
-executed only once. Note, that use of this attribute is generally discouraged -
-tests should pass reliably when their assertions are upheld.
+Note that use of this attribute is generally discouraged - tests should pass
+reliably when their assertions are upheld.
 </p>

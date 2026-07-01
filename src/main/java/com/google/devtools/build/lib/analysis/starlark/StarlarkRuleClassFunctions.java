@@ -238,8 +238,8 @@ public class StarlarkRuleClassFunctions implements StarlarkRuleFunctionsApi {
                     .nonconfigurable("policy decision: should be consistent across configurations")
                     .value(TIMEOUT_DEFAULT))
             .add(
-                attr("flaky", BOOLEAN)
-                    .value(false)
+                attr("flaky", Type.FLAKY_TEST_RETRIES)
+                    .value(StarlarkInt.of(0))
                     .taggable()
                     .nonconfigurable("taggable - called in Rule.getRuleTags"))
             .add(attr("shard_count", INTEGER).value(StarlarkInt.of(-1)))
