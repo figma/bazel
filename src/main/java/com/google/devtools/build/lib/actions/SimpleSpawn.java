@@ -73,12 +73,11 @@ public final class SimpleSpawn implements Spawn {
         localResources,
         localResourcesSupplier);
     if (localResources != null) {
-      this.localResourcesCached = localResources;
-      this.localResourcesSupplier = null;
+      this.localResourcesSupplier = () -> localResources;
     } else {
       this.localResourcesSupplier = localResourcesSupplier;
-      this.localResourcesCached = null;
     }
+    this.localResourcesCached = null;
     this.pathMapper = pathMapper;
   }
 
@@ -280,7 +279,12 @@ public final class SimpleSpawn implements Spawn {
   public ResourceSet getLocalResources() throws ExecException {
     if (localResourcesCached == null) {
       // Not expected to be called concurrently, and an idempotent computation if it is.
-      localResourcesCached = localResourcesSupplier.get();
+      localResourcesCached =
+          localResourcesSupplier
+              .get()
+              .withResourceOverrides(
+                  ExecutionRequirements.parseResources(getExecutionInfo()),
+                  ExecutionRequirements.parseResources(getCombinedExecProperties()));
     }
     return localResourcesCached;
   }
