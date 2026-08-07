@@ -846,11 +846,13 @@ public class StandaloneTestStrategy extends TestStrategy {
 
     Path xmlOutputPath = resolvedPaths.getXmlOutputPath();
 
+    // EXPERIMENTAL: disable derived test.xml spawn to observe checkOutputs when test.xml is missing.
     // If the test did not create a test.xml, and --experimental_split_xml_generation is enabled,
     // then we run a separate action to create a test.xml from test.log. We do this as a spawn
     // rather than doing it locally in-process, as the test.log file may only exist remotely (when
     // remote execution is enabled), and we do not want to have to download it.
-    if (executionOptions.splitXmlGeneration
+    if (false
+        && executionOptions.splitXmlGeneration
         && fileOutErr.getOutputPath().exists()
         && !xmlOutputPath.exists()) {
       Spawn xmlGeneratingSpawn =
