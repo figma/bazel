@@ -99,6 +99,11 @@ on:
         description: "Fork branch/tag/commit to build, named <upstream-version>-figma (e.g. 8.6.0-figma). The release version is derived automatically."
         required: true
         type: string
+      upstream_tag:
+        description: "Optional upstream tag to verify against and use as host Bazel (e.g. 8.8.0rc1 when the final release tag does not exist yet). Defaults to the derived base version."
+        required: false
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -111,6 +116,7 @@ jobs:
     outputs:
       sha: ${{ steps.resolve.outputs.sha }}
       base_version: ${{ steps.resolve.outputs.base_version }}
+      upstream_tag: ${{ steps.resolve.outputs.upstream_tag }}
       version: ${{ steps.resolve.outputs.version }}
     steps:
       - name: Checkout ${{ inputs.ref }}
@@ -139,10 +145,14 @@ jobs:
           fi
 
           # 2. Sanity check: the ref must actually descend from upstream <base>.
+          upstream_tag='${{ inputs.upstream_tag }}'
+          if [ -z "$upstream_tag" ]; then
+            upstream_tag="$base"
+          fi
           git remote add upstream https://github.com/bazelbuild/bazel.git 2>/dev/null || true
-          git fetch --no-tags upstream "refs/tags/${base}:refs/tags/upstream-${base}"
+          git fetch --no-tags upstream "refs/tags/${upstream_tag}:refs/tags/upstream-${base}"
           if ! git merge-base --is-ancestor "upstream-${base}" HEAD; then
-            echo "::error::ref '$ref' does not descend from upstream Bazel ${base} — wrong base version?"
+            echo "::error::ref '$ref' does not descend from upstream Bazel ${upstream_tag} — wrong base version?"
             exit 1
           fi
 
@@ -166,11 +176,12 @@ jobs:
           {
             echo "sha=$sha"
             echo "base_version=$base"
+            echo "upstream_tag=$upstream_tag"
             echo "version=$version"
           } >> "$GITHUB_OUTPUT"
 
           echo "ref '$ref' @ ${sha:0:12}"
-          echo "upstream base: $base (host Bazel)"
+          echo "upstream base: $base (host Bazel: $upstream_tag)"
           echo "previous figma build for $base: ${max:-none}"
           echo "=> release version / tag: $version"
 
@@ -211,7 +222,7 @@ jobs:
         env:
           # Bazelisk reads this instead of the checked-in .bazelversion, so the
           # host Bazel used to build always matches the upstream base version.
-          USE_BAZEL_VERSION: ${{ needs.setup.outputs.base_version }}
+          USE_BAZEL_VERSION: ${{ needs.setup.outputs.upstream_tag }}
           VERSION: ${{ needs.setup.outputs.version }}
           ARCH: ${{ matrix.arch }}
           BAZELISK_ARCH: ${{ matrix.bazelisk_arch }}
@@ -320,7 +331,7 @@ jobs:
 
       - name: Build Bazel
         env:
-          USE_BAZEL_VERSION: ${{ needs.setup.outputs.base_version }}
+          USE_BAZEL_VERSION: ${{ needs.setup.outputs.upstream_tag }}
           VERSION: ${{ needs.setup.outputs.version }}
         run: |
           set -euo pipefail
@@ -391,15 +402,17 @@ jobs:
         env:
           VERSION: ${{ needs.setup.outputs.version }}
           BASE_VERSION: ${{ needs.setup.outputs.base_version }}
+          UPSTREAM_TAG: ${{ needs.setup.outputs.upstream_tag }}
         run: |
           set -euo pipefail
           label="$VERSION"
           base="$BASE_VERSION"
+          upstream_tag="$UPSTREAM_TAG"
           ref='${{ inputs.ref }}'
 
-          # Fetch the upstream base tag so we can describe drift from upstream.
+          # Fetch the upstream tag so we can describe drift from upstream.
           git remote add upstream https://github.com/bazelbuild/bazel.git 2>/dev/null || true
-          git fetch --no-tags upstream "refs/tags/${base}:refs/tags/upstream-${base}"
+          git fetch --no-tags upstream "refs/tags/${upstream_tag}:refs/tags/upstream-${base}"
 
           upstream_sha="$(git rev-parse --short "upstream-${base}")"
           head_sha="$(git rev-parse --short HEAD)"
@@ -412,7 +425,7 @@ jobs:
             echo
             echo "## Upstream base"
             echo
-            echo "Forked from upstream Bazel **${base}** ([bazelbuild/bazel@\`${upstream_sha}\`](https://github.com/bazelbuild/bazel/releases/tag/${base}))."
+            echo "Forked from upstream Bazel **${base}** ([bazelbuild/bazel@\`${upstream_sha}\`](https://github.com/bazelbuild/bazel/releases/tag/${upstream_tag}))."
             echo
             echo "## Figma commits on top of upstream"
             echo
