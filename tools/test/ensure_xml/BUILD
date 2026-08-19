@@ -45,7 +45,7 @@ go_test(
 
 [
     go_cross_binary(
-        name = "ensure_xml_" + platform,
+        name = "ensure_xml_" + platform + "_build",
         platform = "@rules_go//go/toolchain:" + platform,
         target = ":ensure_xml",
     )

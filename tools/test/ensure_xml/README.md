@@ -14,14 +14,14 @@ inputs before an execution platform has a Go toolchain, and remote executors
 should not need a JRE or libc. Regenerate them from source with:
 
 ```sh
-bazel build //tools/test/ensure_xml:ensure_xml_linux_amd64
-cp bazel-bin/tools/test/ensure_xml/ensure_xml_linux_amd64 \
+bazel build //tools/test/ensure_xml:ensure_xml_linux_amd64_build
+cp bazel-bin/tools/test/ensure_xml/ensure_xml_linux_amd64_build \
   tools/test/ensure_xml/ensure_xml_linux_amd64
-bazel build //tools/test/ensure_xml:ensure_xml_linux_arm64
-cp bazel-bin/tools/test/ensure_xml/ensure_xml_linux_arm64 \
+bazel build //tools/test/ensure_xml:ensure_xml_linux_arm64_build
+cp bazel-bin/tools/test/ensure_xml/ensure_xml_linux_arm64_build \
   tools/test/ensure_xml/ensure_xml_linux_arm64
-bazel build //tools/test/ensure_xml:ensure_xml_darwin_arm64
-cp bazel-bin/tools/test/ensure_xml/ensure_xml_darwin_arm64 \
+bazel build //tools/test/ensure_xml:ensure_xml_darwin_arm64_build
+cp bazel-bin/tools/test/ensure_xml/ensure_xml_darwin_arm64_build \
   tools/test/ensure_xml/ensure_xml_darwin_arm64
 ```
 
