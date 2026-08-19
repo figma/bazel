@@ -195,8 +195,13 @@ public abstract class TestStrategy implements TestActionContext {
    */
   public static ImmutableList<String> getArgs(TestRunnerAction testAction)
       throws ExecException, InterruptedException {
+    return getArgs(testAction, /* ensureXml= */ false);
+  }
+
+  public static ImmutableList<String> getArgs(TestRunnerAction testAction, boolean ensureXml)
+      throws ExecException, InterruptedException {
     try {
-      return expandedArgsFromAction(testAction);
+      return expandedArgsFromAction(testAction, ensureXml);
     } catch (CommandLineExpansionException e) {
       throw new UserExecException(
           e,
@@ -217,6 +222,12 @@ public abstract class TestStrategy implements TestActionContext {
    */
   public static ImmutableList<String> expandedArgsFromAction(TestRunnerAction testAction)
       throws CommandLineExpansionException, InterruptedException {
+    return expandedArgsFromAction(testAction, /* ensureXml= */ false);
+  }
+
+  public static ImmutableList<String> expandedArgsFromAction(
+      TestRunnerAction testAction, boolean ensureXml)
+      throws CommandLineExpansionException, InterruptedException {
     List<String> args = Lists.newArrayList();
     OS executionOs = testAction.getExecutionSettings().getExecutionOs();
 
@@ -233,6 +244,15 @@ public abstract class TestStrategy implements TestActionContext {
     }
 
     TestTargetExecutionSettings execSettings = testAction.getExecutionSettings();
+
+    if (ensureXml) {
+      Artifact ensureXmlExecutable =
+          Preconditions.checkNotNull(testAction.getEnsureXmlExecutable(), "%s", testAction);
+      args.add(
+          ensureXmlExecutable
+              .getExecPath()
+              .getCallablePathStringForOs(executionOs));
+    }
 
     // Insert the command prefix specified by the "--run_under=<command-prefix>" option, if any.
     if (execSettings.getRunUnder() != null) {

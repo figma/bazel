@@ -104,7 +104,9 @@ cc_test(
 
 filegroup(
     name = "srcs",
-    srcs = glob(["**"]),
+    srcs = glob(["**"]) + [
+        "//tools/test/ensure_xml:srcs",
+    ],
 )
 
 filegroup(
@@ -113,6 +115,7 @@ filegroup(
         "BUILD.tools",
         "collect_cc_coverage.sh",
         "collect_coverage.sh",
+        "//tools/test/ensure_xml:embedded_files",
         "extensions.bzl",
         "generate-xml.sh",
         "test-setup.sh",

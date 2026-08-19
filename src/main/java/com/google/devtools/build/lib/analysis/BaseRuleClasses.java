@@ -259,6 +259,11 @@ public class BaseRuleClasses {
                   .singleArtifact()
                   .value(env.getToolsLabel("//tools/test:xml_writer")))
           .add(
+              attr("$ensure_xml", LABEL)
+                  .cfg(ExecutionTransitionFactory.createFactory())
+                  .singleArtifact()
+                  .value(env.getToolsLabel("//tools/test:ensure_xml")))
+          .add(
               attr("$test_runtime", LABEL_LIST)
                   .cfg(ExecutionTransitionFactory.createFactory())
                   .value(getTestRuntimeLabelList(env)))

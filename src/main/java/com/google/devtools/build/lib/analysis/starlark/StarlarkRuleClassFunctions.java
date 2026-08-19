@@ -264,6 +264,11 @@ public class StarlarkRuleClassFunctions implements StarlarkRuleFunctionsApi {
                     .singleArtifact()
                     .value(labelCache.get(toolsRepository + "//tools/test:xml_writer")))
             .add(
+                attr("$ensure_xml", LABEL)
+                    .cfg(ExecutionTransitionFactory.createFactory())
+                    .singleArtifact()
+                    .value(labelCache.get(toolsRepository + "//tools/test:ensure_xml")))
+            .add(
                 attr("$test_runtime", LABEL_LIST)
                     .cfg(ExecutionTransitionFactory.createFactory())
                     // Getting this default value through the getTestRuntimeLabelList helper ensures

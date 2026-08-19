@@ -17,7 +17,9 @@ package com.google.devtools.build.lib.exec;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.truth.Truth.assertThat;
 import static java.nio.charset.StandardCharsets.UTF_8;
+import static org.junit.Assert.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -48,6 +50,7 @@ import com.google.devtools.build.lib.analysis.test.TestActionContext.ProcessedAt
 import com.google.devtools.build.lib.analysis.test.TestActionContext.TestRunnerSpawn;
 import com.google.devtools.build.lib.analysis.test.TestAttempt;
 import com.google.devtools.build.lib.analysis.test.TestConfiguration.TestOptions.CancelConcurrentTests;
+import com.google.devtools.build.lib.analysis.test.TestConfiguration.TestXmlMissingBehavior;
 import com.google.devtools.build.lib.analysis.test.TestProvider;
 import com.google.devtools.build.lib.analysis.test.TestResult;
 import com.google.devtools.build.lib.analysis.test.TestRunnerAction;
@@ -73,6 +76,7 @@ import com.google.devtools.build.lib.util.io.FileOutErr;
 import com.google.devtools.build.lib.vfs.FileSystem;
 import com.google.devtools.build.lib.vfs.FileSystemUtils;
 import com.google.devtools.build.lib.vfs.Path;
+import com.google.devtools.build.lib.vfs.PathFragment;
 import com.google.devtools.build.lib.vfs.SyscallCache;
 import com.google.devtools.build.lib.view.test.TestStatus.BlazeTestStatus;
 import com.google.devtools.build.lib.view.test.TestStatus.TestResultData;
@@ -663,7 +667,13 @@ public final class StandaloneTestStrategyTest extends BuildViewTestCase {
   }
 
   @Test
-  public void testThatTestLogAndOutputAreReturnedWithSplitXmlGeneration() throws Exception {
+  public void testThatTestLogAndOutputAreReturnedWithSplitXmlGeneration(
+      @TestParameter({"WARN", "WORKAROUND"})
+          TestXmlMissingBehavior testXmlMissingBehavior)
+      throws Exception {
+    useConfiguration(
+        "--experimental_test_xml_missing_behavior="
+            + (testXmlMissingBehavior == TestXmlMissingBehavior.WARN ? "warn" : "workaround"));
     ExecutionOptions executionOptions = Options.getDefaults(ExecutionOptions.class);
     TestSummaryOptions testSummaryOptions = Options.getDefaults(TestSummaryOptions.class);
     executionOptions.testOutput = ExecutionOptions.TestOutputFormat.ERRORS;
@@ -713,6 +723,11 @@ public final class StandaloneTestStrategyTest extends BuildViewTestCase {
                     /* forciblyRunRemotely= */ false,
                     /* catastrophe= */ false);
               } else {
+                assertThat(spawn.getMnemonic())
+                    .isEqualTo(
+                        testXmlMissingBehavior == TestXmlMissingBehavior.WARN
+                            ? "TestRunner"
+                            : "TestXmlGenerationWorkaround");
                 String testName = "standalone/failing_test";
                 assertThat(spawn.getEnvironment()).containsEntry("TEST_BINARY", testName);
                 return ImmutableList.of(xmlGeneratorSpawnResult);
@@ -749,6 +764,154 @@ public final class StandaloneTestStrategyTest extends BuildViewTestCase {
     assertThat(outErr.getErrorPath().exists()).isFalse();
     assertThat(called).hasSize(2);
     assertThat(called).containsNoDuplicates();
+    assertThat(
+            storedEvents.getEvents().stream()
+                .anyMatch(
+                    event ->
+                        event.getKind() == EventKind.WARNING
+                            && event.getMessage().contains("failed to produce test.xml")))
+        .isEqualTo(testXmlMissingBehavior == TestXmlMissingBehavior.WARN);
+  }
+
+  @Test
+  public void missingXmlFailBehaviorFailsWithoutGeneratingXml() throws Exception {
+    useConfiguration("--experimental_test_xml_missing_behavior=fail");
+    ExecutionOptions executionOptions = Options.getDefaults(ExecutionOptions.class);
+    executionOptions.splitXmlGeneration = true;
+    TestSummaryOptions testSummaryOptions = Options.getDefaults(TestSummaryOptions.class);
+    Path tmpDirRoot = TestStrategy.getTmpRoot(rootDirectory, outputBase, executionOptions);
+    BinTools binTools = BinTools.forUnitTesting(directories, analysisMock.getEmbeddedTools());
+    TestedStandaloneTestStrategy standaloneTestStrategy =
+        new TestedStandaloneTestStrategy(
+            executionOptions, testSummaryOptions, binTools, tmpDirRoot);
+
+    scratch.file("standalone/missing_xml_test.sh", "this does not get executed, it is mocked out");
+    scratch.file(
+        "standalone/BUILD",
+        """
+        load('//test_defs:foo_test.bzl', 'foo_test')
+        foo_test(
+            name = "missing_xml_test",
+            size = "small",
+            srcs = ["missing_xml_test.sh"],
+        )
+        """);
+    TestRunnerAction testRunnerAction = getTestAction("//standalone:missing_xml_test");
+    when(spawnStrategy.exec(any(), any())).thenReturn(ImmutableList.of(PASSED_TEST_SPAWN));
+    ActionExecutionContext actionExecutionContext =
+        new FakeActionExecutionContext(
+            createTempOutErr(tmpDirRoot),
+            inputMetadataFor(testRunnerAction),
+            spawnStrategy,
+            binTools);
+
+    ActionExecutionException exception =
+        assertThrows(
+            ActionExecutionException.class,
+            () -> execute(testRunnerAction, actionExecutionContext, standaloneTestStrategy));
+
+    assertThat(exception).hasMessageThat().contains("failed to produce test.xml");
+    verify(spawnStrategy, times(1)).exec(any(), any());
+  }
+
+  @Test
+  public void workaroundWrapperProducesXmlWithoutDerivedSpawn() throws Exception {
+    useConfiguration("--experimental_test_xml_missing_behavior=workaround");
+    ExecutionOptions executionOptions = Options.getDefaults(ExecutionOptions.class);
+    executionOptions.splitXmlGeneration = true;
+    TestSummaryOptions testSummaryOptions = Options.getDefaults(TestSummaryOptions.class);
+    Path tmpDirRoot = TestStrategy.getTmpRoot(rootDirectory, outputBase, executionOptions);
+    BinTools binTools = BinTools.forUnitTesting(directories, analysisMock.getEmbeddedTools());
+    TestedStandaloneTestStrategy standaloneTestStrategy =
+        new TestedStandaloneTestStrategy(
+            executionOptions, testSummaryOptions, binTools, tmpDirRoot);
+
+    scratch.file("standalone/wrapped_test.sh", "this does not get executed, it is mocked out");
+    scratch.file(
+        "standalone/BUILD",
+        """
+        load('//test_defs:foo_test.bzl', 'foo_test')
+        foo_test(
+            name = "wrapped_test",
+            size = "small",
+            srcs = ["wrapped_test.sh"],
+        )
+        """);
+    TestRunnerAction testRunnerAction = getTestAction("//standalone:wrapped_test");
+    when(spawnStrategy.exec(any(), any()))
+        .thenAnswer(
+            invocation -> {
+              Spawn spawn = invocation.getArgument(0);
+              assertThat(
+                      spawn.getArguments().stream()
+                          .map(argument -> PathFragment.create(argument).getBaseName())
+                          .collect(toImmutableList()))
+                  .contains("ensure_xml_bin");
+              FileSystemUtils.writeContent(
+                  testRunnerAction.getTestXml().getPath(),
+                  UTF_8,
+                  "<testsuites><testsuite name=\"wrapped\"/></testsuites>\n");
+              return ImmutableList.of(PASSED_TEST_SPAWN);
+            });
+
+    ActionExecutionContext actionExecutionContext =
+        new FakeActionExecutionContext(
+            createTempOutErr(tmpDirRoot),
+            inputMetadataFor(testRunnerAction),
+            spawnStrategy,
+            binTools);
+
+    assertThat(execute(testRunnerAction, actionExecutionContext, standaloneTestStrategy))
+        .containsExactly(PASSED_TEST_SPAWN);
+    verify(spawnStrategy, times(1)).exec(any(), any());
+  }
+
+  @Test
+  public void workaroundWrapperIsDisabledWithoutSplitXmlGeneration() throws Exception {
+    useConfiguration("--experimental_test_xml_missing_behavior=workaround");
+    ExecutionOptions executionOptions = Options.getDefaults(ExecutionOptions.class);
+    executionOptions.splitXmlGeneration = false;
+    TestSummaryOptions testSummaryOptions = Options.getDefaults(TestSummaryOptions.class);
+    Path tmpDirRoot = TestStrategy.getTmpRoot(rootDirectory, outputBase, executionOptions);
+    BinTools binTools = BinTools.forUnitTesting(directories, analysisMock.getEmbeddedTools());
+    TestedStandaloneTestStrategy standaloneTestStrategy =
+        new TestedStandaloneTestStrategy(
+            executionOptions, testSummaryOptions, binTools, tmpDirRoot);
+
+    scratch.file("standalone/unwrapped_test.sh", "this does not get executed, it is mocked out");
+    scratch.file(
+        "standalone/BUILD",
+        """
+        load('//test_defs:foo_test.bzl', 'foo_test')
+        foo_test(
+            name = "unwrapped_test",
+            size = "small",
+            srcs = ["unwrapped_test.sh"],
+        )
+        """);
+    TestRunnerAction testRunnerAction = getTestAction("//standalone:unwrapped_test");
+    when(spawnStrategy.exec(any(), any()))
+        .thenAnswer(
+            invocation -> {
+              Spawn spawn = invocation.getArgument(0);
+              assertThat(
+                      spawn.getArguments().stream()
+                          .map(argument -> PathFragment.create(argument).getBaseName())
+                          .collect(toImmutableList()))
+                  .doesNotContain("ensure_xml_bin");
+              return ImmutableList.of(PASSED_TEST_SPAWN);
+            });
+
+    ActionExecutionContext actionExecutionContext =
+        new FakeActionExecutionContext(
+            createTempOutErr(tmpDirRoot),
+            inputMetadataFor(testRunnerAction),
+            spawnStrategy,
+            binTools);
+
+    assertThat(execute(testRunnerAction, actionExecutionContext, standaloneTestStrategy))
+        .containsExactly(PASSED_TEST_SPAWN);
+    verify(spawnStrategy, times(1)).exec(any(), any());
   }
 
   @Test
