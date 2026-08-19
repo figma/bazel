@@ -55,6 +55,7 @@ import java.util.Objects;
 @RequiresOptions(options = {TestConfiguration.TestOptions.class})
 public class TestConfiguration extends Fragment {
   public enum TestXmlMissingBehavior {
+    LEGACY,
     FAIL,
     WARN,
     WORKAROUND;
@@ -157,17 +158,17 @@ public class TestConfiguration extends Fragment {
 
     @Option(
         name = "experimental_test_xml_missing_behavior",
-        defaultValue = "warn",
+        defaultValue = "legacy",
         converter = TestXmlMissingBehavior.Converter.class,
         documentationCategory = OptionDocumentationCategory.EXECUTION_STRATEGY,
         effectTags = {OptionEffectTag.EXECUTION, OptionEffectTag.AFFECTS_OUTPUTS},
         metadataTags = {OptionMetadataTag.EXPERIMENTAL},
         help =
             "Controls what Bazel does when a test action does not produce test.xml and split XML "
-                + "generation is enabled: 'fail' fails the action, 'warn' reports a warning and "
-                + "generates XML with the TestRunner mnemonic, and 'workaround' wraps the test "
-                + "with a native XML fallback and uses the distinct "
-                + "TestXmlGenerationWorkaround mnemonic if a derived fallback is still needed.")
+                + "generation is enabled: 'legacy' silently generates XML with the TestRunner "
+                + "mnemonic, 'fail' fails the action, 'warn' reports a warning and generates XML "
+                + "with the distinct TestXmlGenerationFallback mnemonic, and 'workaround' wraps "
+                + "the test with a native XML fallback and fails if XML is still absent.")
     public TestXmlMissingBehavior testXmlMissingBehavior;
 
     @Option(

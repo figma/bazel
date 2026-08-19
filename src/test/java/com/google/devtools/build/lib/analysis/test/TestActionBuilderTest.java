@@ -809,6 +809,15 @@ public class TestActionBuilderTest extends BuildViewTestCase {
   }
 
   @Test
+  public void testMissingXmlBehaviorDefaultsToLegacy() throws Exception {
+    TestRunnerAction testAction =
+        (TestRunnerAction) getGeneratingAction(getTestStatusArtifacts("//tests:small_test_2").get(0));
+
+    assertThat(testAction.getTestXmlMissingBehavior())
+        .isEqualTo(TestConfiguration.TestXmlMissingBehavior.LEGACY);
+  }
+
+  @Test
   public void testRunUnderConfiguredForTestExecPlatform() throws Exception {
     scratch.file(
         "some_test.bzl",

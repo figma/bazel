@@ -668,12 +668,12 @@ public final class StandaloneTestStrategyTest extends BuildViewTestCase {
 
   @Test
   public void testThatTestLogAndOutputAreReturnedWithSplitXmlGeneration(
-      @TestParameter({"WARN", "WORKAROUND"})
+      @TestParameter({"LEGACY", "WARN"})
           TestXmlMissingBehavior testXmlMissingBehavior)
       throws Exception {
     useConfiguration(
         "--experimental_test_xml_missing_behavior="
-            + (testXmlMissingBehavior == TestXmlMissingBehavior.WARN ? "warn" : "workaround"));
+            + (testXmlMissingBehavior == TestXmlMissingBehavior.WARN ? "warn" : "legacy"));
     ExecutionOptions executionOptions = Options.getDefaults(ExecutionOptions.class);
     TestSummaryOptions testSummaryOptions = Options.getDefaults(TestSummaryOptions.class);
     executionOptions.testOutput = ExecutionOptions.TestOutputFormat.ERRORS;
@@ -726,8 +726,8 @@ public final class StandaloneTestStrategyTest extends BuildViewTestCase {
                 assertThat(spawn.getMnemonic())
                     .isEqualTo(
                         testXmlMissingBehavior == TestXmlMissingBehavior.WARN
-                            ? "TestRunner"
-                            : "TestXmlGenerationWorkaround");
+                            ? "TestXmlGenerationFallback"
+                            : "TestRunner");
                 String testName = "standalone/failing_test";
                 assertThat(spawn.getEnvironment()).containsEntry("TEST_BINARY", testName);
                 return ImmutableList.of(xmlGeneratorSpawnResult);
@@ -774,8 +774,13 @@ public final class StandaloneTestStrategyTest extends BuildViewTestCase {
   }
 
   @Test
-  public void missingXmlFailBehaviorFailsWithoutGeneratingXml() throws Exception {
-    useConfiguration("--experimental_test_xml_missing_behavior=fail");
+  public void missingXmlStrictBehaviorFailsWithoutGeneratingXml(
+      @TestParameter({"FAIL", "WORKAROUND"})
+          TestXmlMissingBehavior testXmlMissingBehavior)
+      throws Exception {
+    useConfiguration(
+        "--experimental_test_xml_missing_behavior="
+            + (testXmlMissingBehavior == TestXmlMissingBehavior.FAIL ? "fail" : "workaround"));
     ExecutionOptions executionOptions = Options.getDefaults(ExecutionOptions.class);
     executionOptions.splitXmlGeneration = true;
     TestSummaryOptions testSummaryOptions = Options.getDefaults(TestSummaryOptions.class);
@@ -838,6 +843,12 @@ public final class StandaloneTestStrategyTest extends BuildViewTestCase {
         )
         """);
     TestRunnerAction testRunnerAction = getTestAction("//standalone:wrapped_test");
+    ActionExecutionContext actionExecutionContext =
+        new FakeActionExecutionContext(
+            createTempOutErr(tmpDirRoot),
+            inputMetadataFor(testRunnerAction),
+            spawnStrategy,
+            binTools);
     when(spawnStrategy.exec(any(), any()))
         .thenAnswer(
             invocation -> {
@@ -847,20 +858,14 @@ public final class StandaloneTestStrategyTest extends BuildViewTestCase {
                           .map(argument -> PathFragment.create(argument).getBaseName())
                           .collect(toImmutableList()))
                   .contains("ensure_xml_bin");
+              assertThat(spawn.getEnvironment())
+                  .containsEntry("EXPERIMENTAL_TEST_ENSURE_XML", "1");
               FileSystemUtils.writeContent(
-                  testRunnerAction.getTestXml().getPath(),
+                  actionExecutionContext.getInputPath(testRunnerAction.getTestXml()),
                   UTF_8,
                   "<testsuites><testsuite name=\"wrapped\"/></testsuites>\n");
               return ImmutableList.of(PASSED_TEST_SPAWN);
             });
-
-    ActionExecutionContext actionExecutionContext =
-        new FakeActionExecutionContext(
-            createTempOutErr(tmpDirRoot),
-            inputMetadataFor(testRunnerAction),
-            spawnStrategy,
-            binTools);
-
     assertThat(execute(testRunnerAction, actionExecutionContext, standaloneTestStrategy))
         .containsExactly(PASSED_TEST_SPAWN);
     verify(spawnStrategy, times(1)).exec(any(), any());
@@ -899,6 +904,7 @@ public final class StandaloneTestStrategyTest extends BuildViewTestCase {
                           .map(argument -> PathFragment.create(argument).getBaseName())
                           .collect(toImmutableList()))
                   .doesNotContain("ensure_xml_bin");
+              assertThat(spawn.getEnvironment()).doesNotContainKey("EXPERIMENTAL_TEST_ENSURE_XML");
               return ImmutableList.of(PASSED_TEST_SPAWN);
             });
 
