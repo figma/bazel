@@ -419,7 +419,11 @@ launcher_flag_alias(
 
         filegroup(
             name = "ensure_xml",
-            srcs = ["ensure_xml_bin"],
+            srcs = [
+                "ensure_xml_darwin_arm64",
+                "ensure_xml_linux_amd64",
+                "ensure_xml_linux_arm64",
+            ],
         )
 
         filegroup(
@@ -498,9 +502,11 @@ launcher_flag_alias(
             exec "$TEST_PATH" "$@"
             """)
         .chmod(0755);
-    config
-        .create("embedded_tools/tools/test/ensure_xml_bin", "#!/bin/sh", "exec \"$@\"")
-        .chmod(0755);
+    for (String platform : ImmutableList.of("darwin_arm64", "linux_amd64", "linux_arm64")) {
+      config
+          .create("embedded_tools/tools/test/ensure_xml_" + platform, "#!/bin/sh", "exec \"$@\"")
+          .chmod(0755);
+    }
     config
         .create("embedded_tools/tools/test/test-xml-generator.sh", "#!/bin/sh", "cp \"$1\" \"$2\"")
         .chmod(0755);
