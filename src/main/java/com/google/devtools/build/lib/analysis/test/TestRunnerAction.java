@@ -56,6 +56,7 @@ import com.google.devtools.build.lib.analysis.test.TestActionContext.ProcessedAt
 import com.google.devtools.build.lib.analysis.test.TestActionContext.TestAttemptResult;
 import com.google.devtools.build.lib.analysis.test.TestActionContext.TestAttemptResult.Result;
 import com.google.devtools.build.lib.analysis.test.TestActionContext.TestRunnerSpawn;
+import com.google.devtools.build.lib.analysis.test.TestConfiguration.TestXmlMissingBehavior;
 import com.google.devtools.build.lib.analysis.test.TestConfiguration.TestOptions.CancelConcurrentTests;
 import com.google.devtools.build.lib.buildeventstream.TestFileNameConstants;
 import com.google.devtools.build.lib.cmdline.Label;
@@ -115,6 +116,7 @@ public class TestRunnerAction extends AbstractAction
   private final Artifact runfilesMiddleman;
   private final Artifact testSetupScript;
   private final Artifact testXmlGeneratorScript;
+  @Nullable private final Artifact ensureXmlExecutable;
   private final FilesToRunProvider collectCoverageScript;
   private final BuildConfigurationValue configuration;
   private final TestConfiguration testConfiguration;
@@ -200,6 +202,7 @@ public class TestRunnerAction extends AbstractAction
       Artifact runfilesMiddleman,
       Artifact testSetupScript, // Must be in inputs
       Artifact testXmlGeneratorScript, // Must be in inputs
+      @Nullable Artifact ensureXmlExecutable, // Must be in inputs, if not null
       @Nullable
           FilesToRunProvider collectCoverageScript, // filesToRun must be in input, if not null
       Artifact testLog,
@@ -236,6 +239,7 @@ public class TestRunnerAction extends AbstractAction
     this.runfilesMiddleman = runfilesMiddleman;
     this.testSetupScript = testSetupScript;
     this.testXmlGeneratorScript = testXmlGeneratorScript;
+    this.ensureXmlExecutable = ensureXmlExecutable;
     this.collectCoverageScript = collectCoverageScript;
     this.configuration = checkNotNull(configuration);
     this.testConfiguration = checkNotNull(configuration.getFragment(TestConfiguration.class));
@@ -515,6 +519,7 @@ public class TestRunnerAction extends AbstractAction
     fp.addIterableStrings(executionSettings.getArgs().arguments());
     fp.addString(Strings.nullToEmpty(executionSettings.getTestFilter()));
     fp.addBoolean(executionSettings.getTestRunnerFailFast());
+    fp.addString(testConfiguration.getTestXmlMissingBehavior().name());
     RunUnder runUnder = executionSettings.getRunUnder();
     fp.addString(runUnder == null ? "" : runUnder.value());
     fp.addStringMap(coverageEnv);
@@ -1079,6 +1084,15 @@ public class TestRunnerAction extends AbstractAction
 
   public Artifact getTestXmlGeneratorScript() {
     return testXmlGeneratorScript;
+  }
+
+  @Nullable
+  public Artifact getEnsureXmlExecutable() {
+    return ensureXmlExecutable;
+  }
+
+  public TestXmlMissingBehavior getTestXmlMissingBehavior() {
+    return testConfiguration.getTestXmlMissingBehavior();
   }
 
   @Nullable

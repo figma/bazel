@@ -1209,6 +1209,7 @@ message TestAction {
     COMMAND_LINE_EXPANSION_FAILURE = 3 [(metadata) = { exit_code: 1 }];
     DUPLICATE_CPU_TAGS = 4 [(metadata) = { exit_code: 1 }];
     INVALID_CPU_TAG = 5 [(metadata) = { exit_code: 1 }];
+    MISSING_XML_OUTPUT = 6 [(metadata) = { exit_code: 1 }];
   }
 
   Code code = 1;

@@ -37,6 +37,7 @@ import com.google.devtools.build.lib.actions.SpawnMetrics;
 import com.google.devtools.build.lib.actions.SpawnResult;
 import com.google.devtools.build.lib.actions.TestExecException;
 import com.google.devtools.build.lib.analysis.actions.SpawnAction;
+import com.google.devtools.build.lib.analysis.test.TestConfiguration.TestXmlMissingBehavior;
 import com.google.devtools.build.lib.analysis.test.TestAttempt;
 import com.google.devtools.build.lib.analysis.test.TestResult;
 import com.google.devtools.build.lib.analysis.test.TestRunnerAction;
@@ -47,6 +48,7 @@ import com.google.devtools.build.lib.buildeventstream.BuildEventStreamProtos.Tes
 import com.google.devtools.build.lib.buildeventstream.TestFileNameConstants;
 import com.google.devtools.build.lib.collect.nestedset.NestedSetBuilder;
 import com.google.devtools.build.lib.collect.nestedset.Order;
+import com.google.devtools.build.lib.events.Event;
 import com.google.devtools.build.lib.events.Reporter;
 import com.google.devtools.build.lib.runtime.TestSummaryOptions;
 import com.google.devtools.build.lib.server.FailureDetails.Execution.Code;
@@ -73,6 +75,8 @@ import java.util.TreeMap;
 /** Runs TestRunnerAction actions. */
 // TODO(bazel-team): add tests for this strategy.
 public class StandaloneTestStrategy extends TestStrategy {
+  private static final String XML_GENERATION_WORKAROUND_MNEMONIC =
+      "TestXmlGenerationWorkaround";
   private static final ImmutableMap<String, String> ENV_VARS =
       ImmutableMap.<String, String>builder()
           .put("TZ", "UTC")
@@ -125,7 +129,10 @@ public class StandaloneTestStrategy extends TestStrategy {
     Spawn spawn =
         new SimpleSpawn(
             action,
-            getArgs(action),
+            getArgs(
+                action,
+                executionOptions.splitXmlGeneration
+                    && action.getEnsureXmlExecutable() != null),
             ImmutableMap.copyOf(testEnvironment),
             ImmutableMap.copyOf(executionInfo),
             ImmutableMap.of(),
@@ -440,7 +447,10 @@ public class StandaloneTestStrategy extends TestStrategy {
    * generate a test.xml file itself.
    */
   private static Spawn createXmlGeneratingSpawn(
-      TestRunnerAction action, ImmutableMap<String, String> testEnv, SpawnResult result) {
+      TestRunnerAction action,
+      ImmutableMap<String, String> testEnv,
+      SpawnResult result,
+      boolean useWorkaroundMnemonic) {
     ImmutableList<String> args =
         ImmutableList.of(
             action
@@ -462,16 +472,33 @@ public class StandaloneTestStrategy extends TestStrategy {
       envBuilder.put("TEST_SHARD_INDEX", "0");
       envBuilder.put("TEST_TOTAL_SHARDS", "0");
     }
+    ImmutableMap<String, String> environment = envBuilder.buildOrThrow();
+    var inputs =
+        NestedSetBuilder.create(
+            Order.STABLE_ORDER, action.getTestXmlGeneratorScript(), action.getTestLog());
+    if (useWorkaroundMnemonic) {
+      return SimpleSpawn.withMnemonic(
+          action,
+          args,
+          environment,
+          action.getExecutionInfo(),
+          ImmutableMap.of(),
+          inputs,
+          /* tools= */ NestedSetBuilder.emptySet(Order.STABLE_ORDER),
+          /* outputs= */ ImmutableSet.of(action.getTestXml()),
+          /* mandatoryOutputs= */ null,
+          SpawnAction.DEFAULT_RESOURCE_SET,
+          XML_GENERATION_WORKAROUND_MNEMONIC);
+    }
     return new SimpleSpawn(
         action,
         args,
-        envBuilder.buildOrThrow(),
+        environment,
         // Pass the execution info of the action which is identical to the supported tags set on the
         // test target. In particular, this does not set the test timeout on the spawn.
         action.getExecutionInfo(),
         ImmutableMap.of(),
-        /* inputs= */ NestedSetBuilder.create(
-            Order.STABLE_ORDER, action.getTestXmlGeneratorScript(), action.getTestLog()),
+        inputs,
         /* tools= */ NestedSetBuilder.emptySet(Order.STABLE_ORDER),
         /* outputs= */ ImmutableSet.of(action.getTestXml()),
         /* mandatoryOutputs= */ null,
@@ -853,8 +880,21 @@ public class StandaloneTestStrategy extends TestStrategy {
     if (executionOptions.splitXmlGeneration
         && fileOutErr.getOutputPath().exists()
         && !xmlOutputPath.exists()) {
+      String missingXmlMessage =
+          String.format(
+              "Test action %s failed to produce test.xml", testAction.getOwner().getLabel());
+      if (testAction.getTestXmlMissingBehavior() == TestXmlMissingBehavior.FAIL) {
+        throw createTestExecException(TestAction.Code.MISSING_XML_OUTPUT, missingXmlMessage);
+      }
+      if (testAction.getTestXmlMissingBehavior() == TestXmlMissingBehavior.WARN) {
+        actionExecutionContext.getEventHandler().handle(Event.warn(missingXmlMessage));
+      }
       Spawn xmlGeneratingSpawn =
-          createXmlGeneratingSpawn(testAction, spawn.getEnvironment(), spawnResults.get(0));
+          createXmlGeneratingSpawn(
+              testAction,
+              spawn.getEnvironment(),
+              spawnResults.get(0),
+              testAction.getTestXmlMissingBehavior() == TestXmlMissingBehavior.WORKAROUND);
       SpawnStrategyResolver spawnStrategyResolver =
           actionExecutionContext.getContext(SpawnStrategyResolver.class);
       // We treat all failures to generate the test.xml here as catastrophic, and won't rerun

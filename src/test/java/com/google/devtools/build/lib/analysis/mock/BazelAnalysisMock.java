@@ -418,6 +418,11 @@ launcher_flag_alias(
         )
 
         filegroup(
+            name = "ensure_xml",
+            srcs = ["ensure_xml_bin"],
+        )
+
+        filegroup(
             name = "test_setup",
             srcs = ["test-setup.sh"],
         )
@@ -490,8 +495,11 @@ launcher_flag_alias(
             else
               TEST_PATH="$(rlocation $TEST_WORKSPACE/$EXE)"
             fi
-            exec $TEST_PATH
+            exec "$TEST_PATH" "$@"
             """)
+        .chmod(0755);
+    config
+        .create("embedded_tools/tools/test/ensure_xml_bin", "#!/bin/sh", "exec \"$@\"")
         .chmod(0755);
     config
         .create("embedded_tools/tools/test/test-xml-generator.sh", "#!/bin/sh", "cp \"$1\" \"$2\"")
