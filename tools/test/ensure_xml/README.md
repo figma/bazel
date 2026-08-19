@@ -25,6 +25,6 @@ cp bazel-bin/tools/test/ensure_xml/ensure_xml_darwin_arm64_build \
   tools/test/ensure_xml/ensure_xml_darwin_arm64
 ```
 
-Other Unix platforms use `pass_through.sh`, and Windows omits the supervisor. On
-those platforms, workaround mode succeeds only when the test itself writes XML.
-Otherwise Bazel reports a missing-output error.
+Other Unix platforms and Windows omit the supervisor. On those platforms,
+workaround mode succeeds only when the test itself writes XML. Otherwise Bazel
+reports a missing-output error.

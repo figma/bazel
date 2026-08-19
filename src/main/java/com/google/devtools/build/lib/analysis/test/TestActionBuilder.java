@@ -39,14 +39,19 @@ import com.google.devtools.build.lib.analysis.ShToolchain;
 import com.google.devtools.build.lib.analysis.TransitiveInfoCollection;
 import com.google.devtools.build.lib.analysis.actions.LazyWriteNestedSetOfTupleAction;
 import com.google.devtools.build.lib.analysis.config.BuildConfigurationValue;
+import com.google.devtools.build.lib.analysis.platform.ConstraintSettingInfo;
+import com.google.devtools.build.lib.analysis.platform.PlatformInfo;
 import com.google.devtools.build.lib.analysis.test.TestConfiguration.TestOptions.CancelConcurrentTests;
 import com.google.devtools.build.lib.analysis.test.TestProvider.TestParams;
 import com.google.devtools.build.lib.analysis.test.TestProvider.TestParams.CoverageParams;
+import com.google.devtools.build.lib.cmdline.Label;
 import com.google.devtools.build.lib.collect.nestedset.NestedSet;
 import com.google.devtools.build.lib.collect.nestedset.NestedSetBuilder;
 import com.google.devtools.build.lib.collect.nestedset.Order;
 import com.google.devtools.build.lib.packages.TestTimeout;
 import com.google.devtools.build.lib.packages.Type;
+import com.google.devtools.build.lib.util.CPU;
+import com.google.devtools.build.lib.util.OS;
 import com.google.devtools.build.lib.vfs.PathFragment;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import java.util.List;
@@ -75,6 +80,10 @@ public final class TestActionBuilder {
   // reported source file is the same as the actual source path it will not be included in the file.
   private static final String COVERAGE_REPORTED_TO_ACTUAL_SOURCES_FILE =
       "COVERAGE_REPORTED_TO_ACTUAL_SOURCES_FILE";
+  private static final ConstraintSettingInfo OS_CONSTRAINT_SETTING =
+      ConstraintSettingInfo.create(Label.parseCanonicalUnchecked("@platforms//os:os"));
+  private static final ConstraintSettingInfo CPU_CONSTRAINT_SETTING =
+      ConstraintSettingInfo.create(Label.parseCanonicalUnchecked("@platforms//cpu:cpu"));
 
   private final RuleContext ruleContext;
   private final ImmutableList.Builder<Artifact> additionalTools;
@@ -176,6 +185,53 @@ public final class TestActionBuilder {
         : ruleContext.getActionOwner();
   }
 
+  @Nullable
+  private Artifact getEnsureXmlExecutable(ActionOwner actionOwner) {
+    String platformName = getEnsureXmlPlatformName(actionOwner.getExecutionPlatform());
+    if (platformName == null) {
+      return null;
+    }
+    String filename = "ensure_xml_" + platformName;
+    return ruleContext.getPrerequisiteArtifacts("$ensure_xml").list().stream()
+        .filter(artifact -> artifact.getFilename().equals(filename))
+        .findFirst()
+        .orElse(null);
+  }
+
+  @Nullable
+  private static String getEnsureXmlPlatformName(@Nullable PlatformInfo executionPlatform) {
+    if (executionPlatform == null) {
+      return getEnsureXmlPlatformName(
+          OS.getCurrent().getCanonicalName(), CPU.getCurrent().getCanonicalName());
+    }
+
+    if (!executionPlatform.constraints().has(OS_CONSTRAINT_SETTING)
+        || !executionPlatform.constraints().has(CPU_CONSTRAINT_SETTING)) {
+      return null;
+    }
+    return getEnsureXmlPlatformName(
+        executionPlatform.constraints().get(OS_CONSTRAINT_SETTING).label().getName(),
+        executionPlatform.constraints().get(CPU_CONSTRAINT_SETTING).label().getName());
+  }
+
+  @Nullable
+  private static String getEnsureXmlPlatformName(String os, String cpu) {
+    return switch (os) {
+      case "linux" ->
+          switch (cpu) {
+            case "x86_64", "amd64" -> "linux_amd64";
+            case "aarch64", "arm64" -> "linux_arm64";
+            default -> null;
+          };
+      case "osx", "darwin" ->
+          switch (cpu) {
+            case "aarch64", "arm64" -> "darwin_arm64";
+            default -> null;
+          };
+      default -> null;
+    };
+  }
+
   public static int getShardCount(RuleContext ruleContext) {
     int explicitShardCount =
         ruleContext.attributes().get("shard_count", Type.INTEGER).toIntUnchecked();
@@ -216,6 +272,7 @@ public final class TestActionBuilder {
     TestConfiguration testConfiguration = config.getFragment(TestConfiguration.class);
     AnalysisEnvironment env = ruleContext.getAnalysisEnvironment();
     ArtifactRoot root = ruleContext.getTestLogsDirectory();
+    ActionOwner actionOwner = getTestActionOwner(testConfiguration.useTargetPlatformForTests());
 
     final boolean isUsingTestWrapperInsteadOfTestSetupScript = ruleContext.isExecutedOnWindows();
 
@@ -248,10 +305,11 @@ public final class TestActionBuilder {
     inputsBuilder.add(testXmlGeneratorExecutable);
     Artifact ensureXmlExecutable = null;
     if (testConfiguration.getTestXmlMissingBehavior()
-            == TestConfiguration.TestXmlMissingBehavior.WORKAROUND
-        && !isUsingTestWrapperInsteadOfTestSetupScript) {
-      ensureXmlExecutable = ruleContext.getPrerequisiteArtifact("$ensure_xml");
-      inputsBuilder.add(ensureXmlExecutable);
+        == TestConfiguration.TestXmlMissingBehavior.WORKAROUND) {
+      ensureXmlExecutable = getEnsureXmlExecutable(actionOwner);
+      if (ensureXmlExecutable != null) {
+        inputsBuilder.add(ensureXmlExecutable);
+      }
     }
 
     FilesToRunProvider collectCoverageScript = null;
@@ -362,8 +420,6 @@ public final class TestActionBuilder {
         Lists.newArrayListWithCapacity(runsPerTest * shardRuns);
     ImmutableList.Builder<Artifact> coverageArtifacts = ImmutableList.builder();
     ImmutableList.Builder<ActionInput> testOutputs = ImmutableList.builder();
-
-    ActionOwner actionOwner = getTestActionOwner(testConfiguration.useTargetPlatformForTests());
 
     // Use 1-based indices for user friendliness.
     for (int shard = 0; shard < shardRuns; shard++) {
