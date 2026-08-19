@@ -761,6 +761,54 @@ public class TestActionBuilderTest extends BuildViewTestCase {
   }
 
   @Test
+  public void testEnsureXmlWrapsRunUnderAndTest() throws Exception {
+    scratch.file(
+        "xml_wrapper/BUILD",
+        "load('//test_defs:foo_test.bzl', 'foo_test')",
+        "genrule(",
+        "    name = 'run_under',",
+        "    outs = ['run_under.sh'],",
+        "    cmd = \"echo '#!/bin/sh' > $@\",",
+        "    executable = True,",
+        ")",
+        "foo_test(",
+        "    name = 'test',",
+        "    srcs = ['test.sh'],",
+        ")");
+    scratch.file("xml_wrapper/test.sh", "#!/bin/sh", "exit 0");
+    useConfiguration(
+        "--experimental_test_xml_missing_behavior=workaround",
+        "--run_under=//xml_wrapper:run_under");
+
+    TestRunnerAction testAction =
+        (TestRunnerAction)
+            getGeneratingAction(getTestStatusArtifacts("//xml_wrapper:test").get(0));
+    Artifact ensureXml = testAction.getEnsureXmlExecutable();
+    assertThat(ensureXml).isNotNull();
+    assertThat(testAction.getInputs().toList()).contains(ensureXml);
+
+    ImmutableList<String> args =
+        TestStrategy.expandedArgsFromAction(testAction, /* ensureXml= */ true);
+    assertThat(PathFragment.create(args.get(1)).getBaseName()).isEqualTo("ensure_xml_bin");
+    assertThat(PathFragment.create(args.get(2)).getBaseName()).isEqualTo("run_under.sh");
+    assertThat(PathFragment.create(args.get(3)).getBaseName()).isEqualTo("test");
+  }
+
+  @Test
+  public void testEnsureXmlIsNotInputOutsideWorkaroundMode() throws Exception {
+    useConfiguration("--experimental_test_xml_missing_behavior=warn");
+
+    TestRunnerAction testAction =
+        (TestRunnerAction) getGeneratingAction(getTestStatusArtifacts("//tests:small_test_2").get(0));
+
+    assertThat(testAction.getEnsureXmlExecutable()).isNull();
+    assertThat(
+            testAction.getInputs().toList().stream()
+                .map(artifact -> artifact.getExecPath().getBaseName()))
+        .doesNotContain("ensure_xml_bin");
+  }
+
+  @Test
   public void testRunUnderConfiguredForTestExecPlatform() throws Exception {
     scratch.file(
         "some_test.bzl",

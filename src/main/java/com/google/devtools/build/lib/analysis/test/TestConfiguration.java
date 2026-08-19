@@ -36,6 +36,7 @@ import com.google.devtools.build.lib.packages.TestTimeout;
 import com.google.devtools.build.lib.util.Pair;
 import com.google.devtools.build.lib.util.RegexFilter;
 import com.google.devtools.common.options.BoolOrEnumConverter;
+import com.google.devtools.common.options.EnumConverter;
 import com.google.devtools.common.options.Option;
 import com.google.devtools.common.options.OptionDefinition;
 import com.google.devtools.common.options.OptionDocumentationCategory;
@@ -53,6 +54,19 @@ import java.util.Objects;
 /** Test-related options. */
 @RequiresOptions(options = {TestConfiguration.TestOptions.class})
 public class TestConfiguration extends Fragment {
+  public enum TestXmlMissingBehavior {
+    FAIL,
+    WARN,
+    WORKAROUND;
+
+    /** Converts to {@link TestXmlMissingBehavior}. */
+    public static class Converter extends EnumConverter<TestXmlMissingBehavior> {
+      public Converter() {
+        super(TestXmlMissingBehavior.class, "test XML missing behavior");
+      }
+    }
+  }
+
   public static final OptionsDiffPredicate SHOULD_INVALIDATE_FOR_OPTION_DIFF =
       (options, changedOption, oldValue, newValue) -> {
         if (TestOptions.ALWAYS_INVALIDATE_WHEN_CHANGED.contains(changedOption)) {
@@ -140,6 +154,21 @@ public class TestConfiguration extends Fragment {
             "Forwards fail fast option to the test runner. The test runner should stop execution"
                 + " upon first failure.")
     public boolean testRunnerFailFast;
+
+    @Option(
+        name = "experimental_test_xml_missing_behavior",
+        defaultValue = "warn",
+        converter = TestXmlMissingBehavior.Converter.class,
+        documentationCategory = OptionDocumentationCategory.EXECUTION_STRATEGY,
+        effectTags = {OptionEffectTag.EXECUTION, OptionEffectTag.AFFECTS_OUTPUTS},
+        metadataTags = {OptionMetadataTag.EXPERIMENTAL},
+        help =
+            "Controls what Bazel does when a test action does not produce test.xml and split XML "
+                + "generation is enabled: 'fail' fails the action, 'warn' reports a warning and "
+                + "generates XML with the TestRunner mnemonic, and 'workaround' wraps the test "
+                + "with a native XML fallback and uses the distinct "
+                + "TestXmlGenerationWorkaround mnemonic if a derived fallback is still needed.")
+    public TestXmlMissingBehavior testXmlMissingBehavior;
 
     @Option(
         name = "cache_test_results",
@@ -414,6 +443,10 @@ public class TestConfiguration extends Fragment {
 
   public boolean getTestRunnerFailFast() {
     return options.testRunnerFailFast;
+  }
+
+  public TestXmlMissingBehavior getTestXmlMissingBehavior() {
+    return options.testXmlMissingBehavior;
   }
 
   public TriState cacheTestResults() {

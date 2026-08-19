@@ -69,6 +69,15 @@ filegroup(
 )
 
 filegroup(
+    name = "ensure_xml",
+    srcs = select({
+        "//src/conditions:linux_aarch64": ["ensure_xml/ensure_xml_linux_arm64"],
+        "//src/conditions:linux_x86_64": ["ensure_xml/ensure_xml_linux_amd64"],
+        "//conditions:default": ["ensure_xml/pass_through.sh"],
+    }),
+)
+
+filegroup(
     name = "bzl_srcs",
     srcs = ["extensions.bzl"],
 )

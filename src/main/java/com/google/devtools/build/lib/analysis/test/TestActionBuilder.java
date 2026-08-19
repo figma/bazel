@@ -246,6 +246,13 @@ public final class TestActionBuilder {
             ? ruleContext.getPrerequisiteArtifact("$xml_writer")
             : ruleContext.getPrerequisiteArtifact("$xml_generator_script");
     inputsBuilder.add(testXmlGeneratorExecutable);
+    Artifact ensureXmlExecutable = null;
+    if (testConfiguration.getTestXmlMissingBehavior()
+            == TestConfiguration.TestXmlMissingBehavior.WORKAROUND
+        && !isUsingTestWrapperInsteadOfTestSetupScript) {
+      ensureXmlExecutable = ruleContext.getPrerequisiteArtifact("$ensure_xml");
+      inputsBuilder.add(ensureXmlExecutable);
+    }
 
     FilesToRunProvider collectCoverageScript = null;
     TreeMap<String, String> coverageTestEnv = new TreeMap<>();
@@ -416,6 +423,7 @@ public final class TestActionBuilder {
                 runfilesSupport.getRunfilesMiddleman(),
                 testActionExecutable,
                 testXmlGeneratorExecutable,
+                ensureXmlExecutable,
                 collectCoverageScript,
                 testLog,
                 testXml,
