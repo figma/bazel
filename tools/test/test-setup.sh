@@ -144,6 +144,19 @@ if [ ! -z "$TEST_WORKSPACE" ]; then
 fi
 [[ -n "$RUNTEST_PRESERVE_CWD" ]] && DIR="$PWD"
 
+# The ensure-XML supervisor is an embedded tool and therefore an action input,
+# not a runfile of the test. Resolve it against the execroot before changing to
+# the runfiles directory, then remove it from the normal test command line.
+if [[ "${EXPERIMENTAL_TEST_ENSURE_XML:-}" == "1" ]]; then
+  if [ -z "$COVERAGE_DIR" ]; then
+    ENSURE_XML_PATH="$1"
+    shift
+  else
+    ENSURE_XML_PATH="$2"
+    set -- "$1" "${@:3}"
+  fi
+  is_absolute "$ENSURE_XML_PATH" || ENSURE_XML_PATH="$PWD/$ENSURE_XML_PATH"
+fi
 
 # normal commands are run in the exec-root where they have access to
 # the entire source tree. By chdir'ing to the runfiles root, tests only
@@ -332,7 +345,11 @@ start=$(date +%s)
 # Aren't processes fun?
 set -m
 if [[ "${EXPERIMENTAL_SPLIT_XML_GENERATION}" == "1" ]]; then
-  if [ -z "$COVERAGE_DIR" ]; then
+  if [[ "${EXPERIMENTAL_TEST_ENSURE_XML:-}" == "1" && -z "$COVERAGE_DIR" ]]; then
+    ("$ENSURE_XML_PATH" "${TEST_PATH}" "$@" 2>&1) <&0 &
+  elif [[ "${EXPERIMENTAL_TEST_ENSURE_XML:-}" == "1" ]]; then
+    ("$ENSURE_XML_PATH" "$1" "$TEST_PATH" "${@:3}" 2>&1) <&0 &
+  elif [ -z "$COVERAGE_DIR" ]; then
     ("${TEST_PATH}" "$@" 2>&1) <&0 &
   else
     ("$1" "$TEST_PATH" "${@:3}" 2>&1) <&0 &

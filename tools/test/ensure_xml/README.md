@@ -6,8 +6,8 @@ the command's exit status. It never replaces XML produced by the test.
 
 The root cause remains a test runner that failed to honor Bazel's declared XML
 output contract. This wrapper is an opt-in compatibility workaround for such
-tests. Bazel's derived XML action remains as a last resort for cases where the
-wrapper itself cannot run or publish XML.
+tests. Workaround mode fails if the wrapper cannot publish XML; it does not hide
+that failure behind Bazel's derived XML action.
 
 The Linux executables are checked-in embedded tools because they must be action
 inputs before an execution platform has a Go toolchain, and remote executors
@@ -20,8 +20,11 @@ cp bazel-bin/tools/test/ensure_xml/ensure_xml_linux_amd64 \
 bazel build //tools/test/ensure_xml:ensure_xml_linux_arm64
 cp bazel-bin/tools/test/ensure_xml/ensure_xml_linux_arm64 \
   tools/test/ensure_xml/ensure_xml_linux_arm64
+bazel build //tools/test/ensure_xml:ensure_xml_darwin_arm64
+cp bazel-bin/tools/test/ensure_xml/ensure_xml_darwin_arm64 \
+  tools/test/ensure_xml/ensure_xml_darwin_arm64
 ```
 
-Other Unix platforms use `pass_through.sh`, and Windows omits the supervisor.
-Their missing XML is handled by the derived fallback action with the
-`TestXmlGenerationWorkaround` mnemonic.
+Other Unix platforms use `pass_through.sh`, and Windows omits the supervisor. On
+those platforms, workaround mode succeeds only when the test itself writes XML.
+Otherwise Bazel reports a missing-output error.
