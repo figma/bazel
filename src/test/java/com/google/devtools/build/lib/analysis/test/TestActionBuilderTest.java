@@ -789,7 +789,7 @@ public class TestActionBuilderTest extends BuildViewTestCase {
 
     ImmutableList<String> args =
         TestStrategy.expandedArgsFromAction(testAction, /* ensureXml= */ true);
-    assertThat(PathFragment.create(args.get(1)).getBaseName()).isEqualTo("ensure_xml_bin");
+    assertThat(PathFragment.create(args.get(1)).getBaseName()).startsWith("ensure_xml_");
     assertThat(PathFragment.create(args.get(2)).getBaseName()).isEqualTo("run_under.sh");
     assertThat(PathFragment.create(args.get(3)).getBaseName()).isEqualTo("test");
   }
@@ -804,8 +804,69 @@ public class TestActionBuilderTest extends BuildViewTestCase {
     assertThat(testAction.getEnsureXmlExecutable()).isNull();
     assertThat(
             testAction.getInputs().toList().stream()
-                .map(artifact -> artifact.getExecPath().getBaseName()))
-        .doesNotContain("ensure_xml_bin");
+                .map(artifact -> artifact.getExecPath().getBaseName())
+                .anyMatch(name -> name.startsWith("ensure_xml_")))
+        .isFalse();
+  }
+
+  @Test
+  public void testEnsureXmlUsesTargetPlatformForTests() throws Exception {
+    scratch.file(
+        "xml_platform/BUILD",
+        "load('//test_defs:foo_test.bzl', 'foo_test')",
+        "platform(",
+        "    name = 'linux_aarch64',",
+        "    constraint_values = [",
+        "        '" + TestConstants.CONSTRAINTS_PACKAGE_ROOT + "os:linux',",
+        "        '" + TestConstants.CONSTRAINTS_PACKAGE_ROOT + "cpu:aarch64',",
+        "    ],",
+        ")",
+        "foo_test(name = 'test', srcs = ['test.sh'])");
+    scratch.file("xml_platform/test.sh", "#!/bin/sh", "exit 0");
+    useConfiguration(
+        "--experimental_test_xml_missing_behavior=workaround",
+        "--use_target_platform_for_tests=true",
+        "--platforms=//xml_platform:linux_aarch64");
+
+    TestRunnerAction testAction =
+        (TestRunnerAction)
+            getGeneratingAction(getTestStatusArtifacts("//xml_platform:test").get(0));
+
+    assertThat(testAction.getExecutionPlatform().label().getName()).isEqualTo("linux_aarch64");
+    assertThat(testAction.getEnsureXmlExecutable().getFilename())
+        .isEqualTo("ensure_xml_linux_arm64");
+    assertThat(
+            testAction.getInputs().toList().stream()
+                .map(artifact -> artifact.getExecPath().getBaseName())
+                .filter(name -> name.startsWith("ensure_xml_")))
+        .containsExactly("ensure_xml_linux_arm64");
+  }
+
+  @Test
+  public void testEnsureXmlIsOmittedForUnsupportedExecutionPlatform() throws Exception {
+    scratch.file(
+        "xml_platform/BUILD",
+        "load('//test_defs:foo_test.bzl', 'foo_test')",
+        "platform(",
+        "    name = 'darwin_x86_64',",
+        "    constraint_values = [",
+        "        '" + TestConstants.CONSTRAINTS_PACKAGE_ROOT + "os:osx',",
+        "        '" + TestConstants.CONSTRAINTS_PACKAGE_ROOT + "cpu:x86_64',",
+        "    ],",
+        ")",
+        "foo_test(name = 'test', srcs = ['test.sh'])");
+    scratch.file("xml_platform/test.sh", "#!/bin/sh", "exit 0");
+    useConfiguration(
+        "--experimental_test_xml_missing_behavior=workaround",
+        "--use_target_platform_for_tests=true",
+        "--platforms=//xml_platform:darwin_x86_64");
+
+    TestRunnerAction testAction =
+        (TestRunnerAction)
+            getGeneratingAction(getTestStatusArtifacts("//xml_platform:test").get(0));
+
+    assertThat(testAction.getExecutionPlatform().label().getName()).isEqualTo("darwin_x86_64");
+    assertThat(testAction.getEnsureXmlExecutable()).isNull();
   }
 
   @Test

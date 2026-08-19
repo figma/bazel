@@ -856,8 +856,8 @@ public final class StandaloneTestStrategyTest extends BuildViewTestCase {
               assertThat(
                       spawn.getArguments().stream()
                           .map(argument -> PathFragment.create(argument).getBaseName())
-                          .collect(toImmutableList()))
-                  .contains("ensure_xml_bin");
+                          .anyMatch(name -> name.startsWith("ensure_xml_")))
+                  .isTrue();
               assertThat(spawn.getEnvironment())
                   .containsEntry("EXPERIMENTAL_TEST_ENSURE_XML", "1");
               FileSystemUtils.writeContent(
@@ -902,8 +902,8 @@ public final class StandaloneTestStrategyTest extends BuildViewTestCase {
               assertThat(
                       spawn.getArguments().stream()
                           .map(argument -> PathFragment.create(argument).getBaseName())
-                          .collect(toImmutableList()))
-                  .doesNotContain("ensure_xml_bin");
+                          .noneMatch(name -> name.startsWith("ensure_xml_")))
+                  .isTrue();
               assertThat(spawn.getEnvironment()).doesNotContainKey("EXPERIMENTAL_TEST_ENSURE_XML");
               return ImmutableList.of(PASSED_TEST_SPAWN);
             });
