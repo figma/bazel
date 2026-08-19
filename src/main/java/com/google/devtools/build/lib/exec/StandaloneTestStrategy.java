@@ -75,8 +75,7 @@ import java.util.TreeMap;
 /** Runs TestRunnerAction actions. */
 // TODO(bazel-team): add tests for this strategy.
 public class StandaloneTestStrategy extends TestStrategy {
-  private static final String XML_GENERATION_WORKAROUND_MNEMONIC =
-      "TestXmlGenerationWorkaround";
+  private static final String XML_GENERATION_FALLBACK_MNEMONIC = "TestXmlGenerationFallback";
   private static final ImmutableMap<String, String> ENV_VARS =
       ImmutableMap.<String, String>builder()
           .put("TZ", "UTC")
@@ -109,6 +108,11 @@ public class StandaloneTestStrategy extends TestStrategy {
     Map<String, String> testEnvironment =
         createEnvironment(
             actionExecutionContext, action, tmpDirRoot, executionOptions.splitXmlGeneration);
+    boolean ensureXml =
+        executionOptions.splitXmlGeneration && action.getEnsureXmlExecutable() != null;
+    if (ensureXml) {
+      testEnvironment.put("EXPERIMENTAL_TEST_ENSURE_XML", "1");
+    }
 
     Map<String, String> executionInfo = new TreeMap<>(action.getExecutionInfo());
     if (!action.shouldAcceptCachedResult()) {
@@ -129,10 +133,7 @@ public class StandaloneTestStrategy extends TestStrategy {
     Spawn spawn =
         new SimpleSpawn(
             action,
-            getArgs(
-                action,
-                executionOptions.splitXmlGeneration
-                    && action.getEnsureXmlExecutable() != null),
+            getArgs(action, ensureXml),
             ImmutableMap.copyOf(testEnvironment),
             ImmutableMap.copyOf(executionInfo),
             ImmutableMap.of(),
@@ -450,7 +451,7 @@ public class StandaloneTestStrategy extends TestStrategy {
       TestRunnerAction action,
       ImmutableMap<String, String> testEnv,
       SpawnResult result,
-      boolean useWorkaroundMnemonic) {
+      boolean useFallbackMnemonic) {
     ImmutableList<String> args =
         ImmutableList.of(
             action
@@ -476,7 +477,7 @@ public class StandaloneTestStrategy extends TestStrategy {
     var inputs =
         NestedSetBuilder.create(
             Order.STABLE_ORDER, action.getTestXmlGeneratorScript(), action.getTestLog());
-    if (useWorkaroundMnemonic) {
+    if (useFallbackMnemonic) {
       return SimpleSpawn.withMnemonic(
           action,
           args,
@@ -488,7 +489,7 @@ public class StandaloneTestStrategy extends TestStrategy {
           /* outputs= */ ImmutableSet.of(action.getTestXml()),
           /* mandatoryOutputs= */ null,
           SpawnAction.DEFAULT_RESOURCE_SET,
-          XML_GENERATION_WORKAROUND_MNEMONIC);
+          XML_GENERATION_FALLBACK_MNEMONIC);
     }
     return new SimpleSpawn(
         action,
@@ -874,19 +875,21 @@ public class StandaloneTestStrategy extends TestStrategy {
     Path xmlOutputPath = resolvedPaths.getXmlOutputPath();
 
     // If the test did not create a test.xml, and --experimental_split_xml_generation is enabled,
-    // then we run a separate action to create a test.xml from test.log. We do this as a spawn
-    // rather than doing it locally in-process, as the test.log file may only exist remotely (when
-    // remote execution is enabled), and we do not want to have to download it.
+    // legacy and warn modes run a separate action to create a test.xml from test.log. We do this as
+    // a spawn rather than doing it locally in-process, as the test.log file may only exist remotely
+    // (when remote execution is enabled), and we do not want to have to download it.
     if (executionOptions.splitXmlGeneration
         && fileOutErr.getOutputPath().exists()
         && !xmlOutputPath.exists()) {
       String missingXmlMessage =
           String.format(
               "Test action %s failed to produce test.xml", testAction.getOwner().getLabel());
-      if (testAction.getTestXmlMissingBehavior() == TestXmlMissingBehavior.FAIL) {
+      TestXmlMissingBehavior missingBehavior = testAction.getTestXmlMissingBehavior();
+      if (missingBehavior == TestXmlMissingBehavior.FAIL
+          || missingBehavior == TestXmlMissingBehavior.WORKAROUND) {
         throw createTestExecException(TestAction.Code.MISSING_XML_OUTPUT, missingXmlMessage);
       }
-      if (testAction.getTestXmlMissingBehavior() == TestXmlMissingBehavior.WARN) {
+      if (missingBehavior == TestXmlMissingBehavior.WARN) {
         actionExecutionContext.getEventHandler().handle(Event.warn(missingXmlMessage));
       }
       Spawn xmlGeneratingSpawn =
@@ -894,7 +897,7 @@ public class StandaloneTestStrategy extends TestStrategy {
               testAction,
               spawn.getEnvironment(),
               spawnResults.get(0),
-              testAction.getTestXmlMissingBehavior() == TestXmlMissingBehavior.WORKAROUND);
+              missingBehavior == TestXmlMissingBehavior.WARN);
       SpawnStrategyResolver spawnStrategyResolver =
           actionExecutionContext.getContext(SpawnStrategyResolver.class);
       // We treat all failures to generate the test.xml here as catastrophic, and won't rerun

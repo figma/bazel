@@ -11,6 +11,7 @@ filegroup(
 filegroup(
     name = "embedded_files",
     srcs = [
+        "ensure_xml_darwin_arm64",
         "ensure_xml_linux_amd64",
         "ensure_xml_linux_arm64",
         "pass_through.sh",
