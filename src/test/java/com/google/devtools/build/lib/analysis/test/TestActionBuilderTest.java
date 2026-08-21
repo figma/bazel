@@ -25,6 +25,7 @@ import com.google.common.collect.Iterables;
 import com.google.common.eventbus.EventBus;
 import com.google.devtools.build.lib.actions.Action;
 import com.google.devtools.build.lib.actions.Artifact;
+import com.google.devtools.build.lib.actions.ExecutionRequirements;
 import com.google.devtools.build.lib.actions.MiddlemanAction;
 import com.google.devtools.build.lib.actions.RunfilesTree;
 import com.google.devtools.build.lib.analysis.AnalysisResult;
@@ -774,6 +775,7 @@ public class TestActionBuilderTest extends BuildViewTestCase {
         "foo_test(",
         "    name = 'test',",
         "    srcs = ['test.sh'],",
+        "    tags = ['requires-test-xml-generation'],",
         ")");
     scratch.file("xml_wrapper/test.sh", "#!/bin/sh", "exit 0");
     useConfiguration(
@@ -786,12 +788,29 @@ public class TestActionBuilderTest extends BuildViewTestCase {
     Artifact ensureXml = testAction.getEnsureXmlExecutable();
     assertThat(ensureXml).isNotNull();
     assertThat(testAction.getInputs().toList()).contains(ensureXml);
+    assertThat(testAction.getExecutionInfo())
+        .containsKey(ExecutionRequirements.REQUIRES_TEST_XML_GENERATION);
 
     ImmutableList<String> args =
         TestStrategy.expandedArgsFromAction(testAction, /* ensureXml= */ true);
     assertThat(PathFragment.create(args.get(1)).getBaseName()).startsWith("ensure_xml_");
     assertThat(PathFragment.create(args.get(2)).getBaseName()).isEqualTo("run_under.sh");
     assertThat(PathFragment.create(args.get(3)).getBaseName()).isEqualTo("test");
+  }
+
+  @Test
+  public void testEnsureXmlIsNotInputWithoutRequiresTestXmlGenerationTag() throws Exception {
+    useConfiguration("--experimental_test_xml_missing_behavior=workaround");
+
+    TestRunnerAction testAction =
+        (TestRunnerAction) getGeneratingAction(getTestStatusArtifacts("//tests:small_test_2").get(0));
+
+    assertThat(testAction.getEnsureXmlExecutable()).isNull();
+    assertThat(
+            testAction.getInputs().toList().stream()
+                .map(artifact -> artifact.getExecPath().getBaseName())
+                .anyMatch(name -> name.startsWith("ensure_xml_")))
+        .isFalse();
   }
 
   @Test
@@ -821,7 +840,11 @@ public class TestActionBuilderTest extends BuildViewTestCase {
         "        '" + TestConstants.CONSTRAINTS_PACKAGE_ROOT + "cpu:aarch64',",
         "    ],",
         ")",
-        "foo_test(name = 'test', srcs = ['test.sh'])");
+        "foo_test(",
+        "    name = 'test',",
+        "    srcs = ['test.sh'],",
+        "    tags = ['requires-test-xml-generation'],",
+        ")");
     scratch.file("xml_platform/test.sh", "#!/bin/sh", "exit 0");
     useConfiguration(
         "--experimental_test_xml_missing_behavior=workaround",
@@ -854,7 +877,11 @@ public class TestActionBuilderTest extends BuildViewTestCase {
         "        '" + TestConstants.CONSTRAINTS_PACKAGE_ROOT + "cpu:x86_64',",
         "    ],",
         ")",
-        "foo_test(name = 'test', srcs = ['test.sh'])");
+        "foo_test(",
+        "    name = 'test',",
+        "    srcs = ['test.sh'],",
+        "    tags = ['requires-test-xml-generation'],",
+        ")");
     scratch.file("xml_platform/test.sh", "#!/bin/sh", "exit 0");
     useConfiguration(
         "--experimental_test_xml_missing_behavior=workaround",

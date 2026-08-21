@@ -261,6 +261,9 @@ public class ExecutionRequirements {
    */
   public static final String REQUIRES_NETWORK = "requires-network";
 
+  /** Indicates that test actions need Bazel to ensure that they produce test XML. */
+  public static final String REQUIRES_TEST_XML_GENERATION = "requires-test-xml-generation";
+
   /**
    * Disables networking for a spawn if possible (only if sandboxing is enabled and if the sandbox
    * supports it).

@@ -27,6 +27,7 @@ import com.google.devtools.build.lib.actions.ActionInputHelper;
 import com.google.devtools.build.lib.actions.ActionOwner;
 import com.google.devtools.build.lib.actions.Artifact;
 import com.google.devtools.build.lib.actions.ArtifactRoot;
+import com.google.devtools.build.lib.actions.ExecutionRequirements;
 import com.google.devtools.build.lib.analysis.Allowlist;
 import com.google.devtools.build.lib.analysis.AnalysisEnvironment;
 import com.google.devtools.build.lib.analysis.FilesToRunProvider;
@@ -305,7 +306,8 @@ public final class TestActionBuilder {
     inputsBuilder.add(testXmlGeneratorExecutable);
     Artifact ensureXmlExecutable = null;
     if (testConfiguration.getTestXmlMissingBehavior()
-        == TestConfiguration.TestXmlMissingBehavior.WORKAROUND) {
+            == TestConfiguration.TestXmlMissingBehavior.WORKAROUND
+        && testProperties.getTags().contains(ExecutionRequirements.REQUIRES_TEST_XML_GENERATION)) {
       ensureXmlExecutable = getEnsureXmlExecutable(actionOwner);
       if (ensureXmlExecutable != null) {
         inputsBuilder.add(ensureXmlExecutable);
