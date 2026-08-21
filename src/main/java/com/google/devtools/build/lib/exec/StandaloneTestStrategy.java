@@ -885,6 +885,12 @@ public class StandaloneTestStrategy extends TestStrategy {
           String.format(
               "Test action %s failed to produce test.xml", testAction.getOwner().getLabel());
       TestXmlMissingBehavior missingBehavior = testAction.getTestXmlMissingBehavior();
+      if (missingBehavior == TestXmlMissingBehavior.WORKAROUND) {
+        missingXmlMessage +=
+            String.format(
+                "; add '%s' to the test target's tags attribute",
+                ExecutionRequirements.REQUIRES_TEST_XML_GENERATION);
+      }
       if (missingBehavior == TestXmlMissingBehavior.FAIL
           || missingBehavior == TestXmlMissingBehavior.WORKAROUND) {
         throw createTestExecException(TestAction.Code.MISSING_XML_OUTPUT, missingXmlMessage);

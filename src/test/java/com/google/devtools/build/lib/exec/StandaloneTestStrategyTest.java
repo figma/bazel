@@ -35,6 +35,7 @@ import com.google.devtools.build.lib.actions.ActionInputPrefetcher;
 import com.google.devtools.build.lib.actions.ActionKeyContext;
 import com.google.devtools.build.lib.actions.Artifact;
 import com.google.devtools.build.lib.actions.DiscoveredModulesPruner;
+import com.google.devtools.build.lib.actions.ExecutionRequirements;
 import com.google.devtools.build.lib.actions.InputMetadataProvider;
 import com.google.devtools.build.lib.actions.Spawn;
 import com.google.devtools.build.lib.actions.SpawnResult;
@@ -816,6 +817,15 @@ public final class StandaloneTestStrategyTest extends BuildViewTestCase {
             () -> execute(testRunnerAction, actionExecutionContext, standaloneTestStrategy));
 
     assertThat(exception).hasMessageThat().contains("failed to produce test.xml");
+    if (testXmlMissingBehavior == TestXmlMissingBehavior.WORKAROUND) {
+      assertThat(exception)
+          .hasMessageThat()
+          .contains(ExecutionRequirements.REQUIRES_TEST_XML_GENERATION);
+    } else {
+      assertThat(exception)
+          .hasMessageThat()
+          .doesNotContain(ExecutionRequirements.REQUIRES_TEST_XML_GENERATION);
+    }
     verify(spawnStrategy, times(1)).exec(any(), any());
   }
 
