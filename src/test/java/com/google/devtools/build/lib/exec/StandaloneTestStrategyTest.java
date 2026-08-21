@@ -840,6 +840,7 @@ public final class StandaloneTestStrategyTest extends BuildViewTestCase {
             name = "wrapped_test",
             size = "small",
             srcs = ["wrapped_test.sh"],
+            tags = ["requires-test-xml-generation"],
         )
         """);
     TestRunnerAction testRunnerAction = getTestAction("//standalone:wrapped_test");
@@ -892,6 +893,7 @@ public final class StandaloneTestStrategyTest extends BuildViewTestCase {
             name = "unwrapped_test",
             size = "small",
             srcs = ["unwrapped_test.sh"],
+            tags = ["requires-test-xml-generation"],
         )
         """);
     TestRunnerAction testRunnerAction = getTestAction("//standalone:unwrapped_test");

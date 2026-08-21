@@ -62,6 +62,14 @@
     is enabled.
   </li>
 
+  <li><code>requires-test-xml-generation</code> marks test actions as requiring
+    Bazel to ensure that they produce test XML. With
+    <code>--experimental_test_xml_missing_behavior=workaround</code> and split
+    XML generation enabled, Bazel supervises these test actions and generates
+    missing XML in the test spawn, as it does when
+    <code>--noexperimental_split_xml_generation</code> is set.
+  </li>
+
   <li><code>block-network</code> keyword blocks access to the external
     network from inside the sandbox. In this case, only communication
     with localhost is allowed. This tag only has an effect if sandboxing is
