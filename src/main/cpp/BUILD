@@ -65,6 +65,7 @@ cc_library(
         "//src/main/cpp/util",
         "//src/main/cpp/util:blaze_exit_code",
         "//src/main/cpp/util:logging",
+        "//src/main/protobuf:command_server_cc_proto",
         "@abseil-cpp//absl/base:log_severity",
         "@abseil-cpp//absl/log:globals",
         "@abseil-cpp//absl/log:initialize",

@@ -100,6 +100,7 @@ public final class GrpcServerTest {
             "response-cookie",
             serverDirectory,
             SERVER_PID,
+            /* criu= */ false,
             /* maxIdleSeconds= */ 1000,
             /* shutdownOnLowSysMem= */ false,
             /* doIdleServerTasks= */ true,

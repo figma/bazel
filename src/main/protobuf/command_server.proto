@@ -228,7 +228,8 @@ message PingResponse {
 
 // Describes metadata necessary for connecting to and managing the server.
 message ServerInfo {
-  // The server process's pid.
+  // The server process's PID as seen by the host-side client. In CRIU mode
+  // this is the host PID, while server.pid.txt retains the namespace-local PID.
   int32 pid = 1;
 
   // Address the CommandServer is listening on. Can be passed directly to grpc

@@ -15,8 +15,10 @@ cc_test(
     name = "blaze_criu_test",
     size = "small",
     srcs = ["blaze_criu_test.cc"],
+    tags = ["no-sandbox"],
     deps = [
         "//src/main/cpp:blaze_util",
+        "//src/main/cpp/util",
         "@com_google_googletest//:gtest_main",
     ],
 )

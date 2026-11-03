@@ -931,6 +931,12 @@ static void ConnectOrDie(const OptionProcessor &option_processor,
 static void EnsurePreviousServerProcessTerminated(
     const blaze_util::Path &server_dir, const StartupOptions &startup_options,
     LoggingInfo *logging_info) {
+  // A previous --criu server may own this base even if this client does not
+  // request --criu. Its PID file is local to its namespace, not a host PID.
+  if (KillNamespacedServer(server_dir)) {
+    logging_info->SetRestartReasonIfNotSet(SERVER_UNRESPONSIVE);
+    return;
+  }
   int server_pid = GetServerPid(server_dir);
   if (server_pid > 0) {
     if (VerifyServerProcess(server_pid, startup_options.output_base)) {
@@ -2105,6 +2111,7 @@ void BlazeServer::KillRunningServer() {
     }
     KillServerProcess(process_info_.server_pid_, output_base_);
   }
+  KillNamespacedServer(output_base_.GetRelative("server"));
 }
 
 unsigned int BlazeServer::Communicate(
@@ -2239,6 +2246,7 @@ unsigned int BlazeServer::Communicate(
                                        kPostShutdownGracePeriodSeconds)) {
       KillServerProcess(process_info_.server_pid_, output_base_);
     }
+    KillNamespacedServer(output_base_.GetRelative("server"));
   }
 
   SendAction(CancelThreadAction::JOIN);
