@@ -24,6 +24,7 @@
 #include "src/main/cpp/util/logging.h"
 #include "src/main/cpp/util/numbers.h"
 #include "src/main/cpp/util/strings.h"
+#include "src/main/protobuf/command_server.pb.h"
 
 namespace blaze {
 
@@ -52,6 +53,8 @@ namespace blaze {
 
 bool CriuPreflight(std::string *) { return true; }
 
+bool KillNamespacedServer(const blaze_util::Path &) { return false; }
+
 int ExecuteDaemonInNamespace(const blaze_util::Path &, const vector<string> &,
                             const map<string, EnvVarValue> &,
                             const blaze_util::Path &, bool,
@@ -67,9 +70,11 @@ int ExecuteDaemonInNamespace(const blaze_util::Path &, const vector<string> &,
 
 #include <dirent.h>
 #include <fcntl.h>
+#include <poll.h>
 #include <sched.h>
 #include <sys/mount.h>
 #include <sys/stat.h>
+#include <sys/syscall.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -331,6 +336,8 @@ vector<string> EnvToStrings(const map<string, EnvVarValue> &env) {
   _exit(fg_code);
 }
 
+bool RecordInit(const blaze_util::Path &server_dir, int init_pid);
+
 // Starts a persistent PID-1 init in fresh user+PID+mount namespaces that runs
 // `fg_argv` (with environment `fg_env`) as its foreground command. Returns the
 // foreground command's exit code via *fg_code, the init's *host* pid via
@@ -341,7 +348,8 @@ vector<string> EnvToStrings(const map<string, EnvVarValue> &env) {
 // we deliberately do not wait for it; we only reap the throwaway userns-setup
 // child. Mirrors horapha's nsrun.Run + runInit.
 bool RunInNamespace(const vector<string> &fg_argv, const vector<string> &fg_env,
-                    int *fg_code, int *init_host_pid) {
+                    const blaze_util::Path &server_dir, int *fg_code,
+                    int *init_host_pid) {
   // Build the NULL-terminated argv/envp arrays BEFORE forking, so the post-fork
   // code paths perform no heap allocation and stay async-fork-safe. The backing
   // string vectors must outlive the fork.
@@ -463,6 +471,15 @@ bool RunInNamespace(const vector<string> &fg_argv, const vector<string> &fg_env,
   int init_pid = 0;
   ssize_t got = read(info_pipe[0], &init_pid, sizeof(init_pid));
   close(info_pipe[0]);
+  bool recorded = got == sizeof(init_pid) && init_pid > 0 &&
+                  RecordInit(server_dir, init_pid);
+  if (got == sizeof(init_pid) && init_pid > 0) {
+    *init_host_pid = init_pid;
+    if (!recorded) {
+      // This is the fresh child we just launched, not a PID read from disk.
+      kill(init_pid, SIGKILL);
+    }
+  }
 
   // Reap the throwaway setup child, then await the init's report.
   int setup_status;
@@ -479,7 +496,7 @@ bool RunInNamespace(const vector<string> &fg_argv, const vector<string> &fg_env,
     BAZEL_LOG(USER) << "criu: namespaced init exited before reporting status.";
     return false;
   }
-  if (got != sizeof(init_pid) || init_pid <= 0) {
+  if (!recorded) {
     BAZEL_LOG(USER) << "criu: did not learn the namespaced init's host pid.";
     return false;
   }
@@ -496,7 +513,7 @@ bool RunInNamespace(const vector<string> &fg_argv, const vector<string> &fg_env,
 // Reads field 22 (start time, jiffies since boot) of /proc/<pid>/stat as a
 // decimal string. The comm field (2nd) is parenthesized and may contain
 // spaces, so we split after the last ')'.
-bool ReadStartTime(int pid, string *start_time) {
+bool ReadStartTime(int pid, string *start_time, char *state = nullptr) {
   string statline;
   if (!blaze_util::ReadFile("/proc/" + std::to_string(pid) + "/stat",
                             &statline)) {
@@ -513,6 +530,9 @@ bool ReadStartTime(int pid, string *start_time) {
   const size_t kStartTimeIndexAfterComm = 19;
   if (fields.size() <= kStartTimeIndexAfterComm) {
     return false;
+  }
+  if (state != nullptr) {
+    *state = fields[0][0];
   }
   *start_time = fields[kStartTimeIndexAfterComm];
   return true;
@@ -625,92 +645,58 @@ bool WaitHostPidForNsPid(int ns_pid, const string &want_comm,
   }
 }
 
-// Rewrites field 1 (pid, a varint) of the ServerInfo proto at `path` to new_pid,
-// leaving every other field byte-for-byte intact. ServerInfo declares pid as
-// field 1 and protobuf serializes fields in order, so it is first (leading byte
-// 0x08 == (field 1 << 3) | wiretype 0). Ported from horapha's
-// PatchRawprotoPID.
-bool PatchRawprotoPid(const blaze_util::Path &path, int new_pid) {
-  // daemonize returns as soon as the pid file exists, but the server writes
-  // server_info.rawproto a little later during startup. Wait for it to appear
-  // (and be non-empty) before patching.
-  string data;
-  auto deadline =
-      std::chrono::steady_clock::now() + std::chrono::seconds(10);
-  while (true) {
-    if (blaze_util::ReadFile(path, &data) && !data.empty()) {
-      break;
-    }
-    if (std::chrono::steady_clock::now() > deadline) {
-      BAZEL_LOG(USER) << "criu: timed out waiting for server_info.rawproto: "
-                      << path.AsPrintablePath();
-      return false;
-    }
-    std::this_thread::sleep_for(std::chrono::milliseconds(50));
-  }
-  if (static_cast<unsigned char>(data[0]) != 0x08) {
-    BAZEL_LOG(USER) << "criu: rawproto bad lead byte (size=" << data.size()
-                    << ")";
-    return false;
-  }
-  // Skip the existing varint value.
-  size_t i = 1;
-  while (i < data.size()) {
-    unsigned char b = static_cast<unsigned char>(data[i]);
-    i++;
-    if ((b & 0x80) == 0) {
-      break;
-    }
-  }
-  string rest = data.substr(i);
-
-  string out;
-  out.push_back(0x08);
-  uint64_t v = static_cast<uint64_t>(new_pid);
-  while (v >= 0x80) {
-    out.push_back(static_cast<char>((v & 0x7f) | 0x80));
-    v >>= 7;
-  }
-  out.push_back(static_cast<char>(v));
-  out += rest;
-
-  // Write atomically so a reader never sees a half-written proto.
-  blaze_util::Path tmp(path.AsNativePath() + ".bazel-criu.tmp");
-  if (!blaze_util::WriteFile(out, tmp, 0600)) {
-    BAZEL_LOG(USER) << "criu: rawproto tmp write failed: "
-                    << tmp.AsPrintablePath();
+// Publish sidecars atomically. PID files use bare decimal without a newline:
+// the JVM's PID watcher deliberately uses strict Integer.parseInt parsing.
+bool WriteIdentityFile(const blaze_util::Path &path, const string &value) {
+  blaze_util::Path tmp(path.AsNativePath() + ".criu.tmp");
+  if (!blaze_util::WriteFile(value, tmp, 0600)) {
     return false;
   }
   if (rename(tmp.AsNativePath().c_str(), path.AsNativePath().c_str()) != 0) {
-    BAZEL_LOG(USER) << "criu: rawproto rename failed: "
-                    << blaze_util::GetLastErrorString();
+    blaze_util::UnlinkPath(tmp);
     return false;
   }
   return true;
 }
 
-// Makes the server identified by host_pid reachable by a host-side client, by
-// writing host_pid into rawproto's pid field and host_pid's current start time
-// into server.starttime. Use after a restore (new pid, new start time) or after
-// a fresh namespaced start (the server advertised its namespace-local pid).
+bool RecordInit(const blaze_util::Path &server_dir, int init_pid) {
+  string start_time;
+  return ReadStartTime(init_pid, &start_time) &&
+         WriteIdentityFile(server_dir.GetRelative("server.init_starttime"),
+                           start_time) &&
+         WriteIdentityFile(server_dir.GetRelative("server.init_host_pid"),
+                           std::to_string(init_pid));
+}
+
+// The JVM owns rawproto and rewrites it from in-memory cookies and address on
+// SIGWINCH, including after restore. Never edit the proto from the launcher.
 bool RewriteServerIdentity(const blaze_util::Path &server_dir, int host_pid) {
   string start_time;
-  if (!ReadStartTime(host_pid, &start_time)) {
-    BAZEL_LOG(USER) << "criu: could not read start time of host pid "
-                    << host_pid;
+  if (!ReadStartTime(host_pid, &start_time) ||
+      !WriteIdentityFile(server_dir.GetRelative("server.starttime"),
+                         start_time) ||
+      !WriteIdentityFile(server_dir.GetRelative("server.host_pid"),
+                         std::to_string(host_pid))) {
+    BAZEL_LOG(USER) << "criu: could not publish host PID and start time";
     return false;
   }
-  if (!PatchRawprotoPid(server_dir.GetRelative("server_info.rawproto"),
-                        host_pid)) {
-    BAZEL_LOG(USER) << "criu: could not patch server_info.rawproto pid";
-    return false;
-  }
-  if (!blaze_util::WriteFile(start_time,
-                             server_dir.GetRelative("server.starttime"))) {
-    BAZEL_LOG(USER) << "criu: could not write server.starttime";
-    return false;
-  }
-  return true;
+  auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+  do {
+    string data;
+    command_server::ServerInfo info;
+    if (blaze_util::ReadFile(server_dir.GetRelative("server_info.rawproto"),
+                             &data) &&
+        info.ParseFromString(data) && info.pid() == host_pid) {
+      return true;
+    }
+    if (kill(host_pid, SIGWINCH) != 0) {
+      break;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+  } while (std::chrono::steady_clock::now() < deadline);
+  BAZEL_LOG(USER) << "criu: timed out waiting for JVM to publish host PID "
+                  << host_pid;
+  return false;
 }
 
 // Resolves the server's namespace-local pid to its host pid (within the PID
@@ -733,7 +719,7 @@ int MakeReachable(int ns_pid, const string &ns_namespace,
   return host_pid;
 }
 
-// Reads a pid from a "<n>\n" file.
+// Reads a decimal PID, accepting optional surrounding whitespace.
 bool ReadPidFile(const blaze_util::Path &path, int *pid) {
   string bufstr;
   return blaze_util::ReadFile(path, &bufstr, 32) &&
@@ -772,6 +758,69 @@ string ResolveCriuBinary() {
 
 }  // namespace
 
+bool KillNamespacedServer(const blaze_util::Path &server_dir) {
+  const auto init_file = server_dir.GetRelative("server.init_host_pid");
+  if (!blaze_util::PathExists(init_file)) {
+    return false;
+  }
+
+  int init_pid = 0;
+  string recorded_start, actual_start;
+  char state = 0;
+  int inner = 0;
+  // Pin the process before validating it, so a recycled PID cannot be signalled
+  // between the /proc checks and SIGKILL. Preflight checks pidfd support.
+  int pidfd = -1;
+  if (ReadPidFile(init_file, &init_pid) && init_pid > 0) {
+#if defined(SYS_pidfd_open) && defined(SYS_pidfd_send_signal)
+    pidfd = syscall(SYS_pidfd_open, init_pid, 0);
+#endif
+  }
+  bool live = ReadStartTime(init_pid, &actual_start, &state) && state != 'Z' &&
+              state != 'X';
+  if (live &&
+      blaze_util::ReadFile(server_dir.GetRelative("server.init_starttime"),
+                           &recorded_start) &&
+      recorded_start == actual_start && InnerNsPid(init_pid, &inner) &&
+      inner == 1) {
+    if (pidfd < 0) {
+      BAZEL_DIE(blaze_exit_code::LOCAL_ENVIRONMENTAL_ERROR)
+          << "criu: cannot safely signal init " << init_pid
+          << ": pidfd_open unavailable";
+    }
+#ifdef SYS_pidfd_send_signal
+    if (syscall(SYS_pidfd_send_signal, pidfd, SIGKILL, nullptr, 0) != 0 &&
+        errno != ESRCH) {
+      BAZEL_DIE(blaze_exit_code::LOCAL_ENVIRONMENTAL_ERROR)
+          << "criu: could not kill namespace init " << init_pid << ": "
+          << blaze_util::GetLastErrorString();
+    }
+#endif
+    struct pollfd exited = {pidfd, POLLIN, 0};
+    int result;
+    do {
+      result = poll(&exited, 1, 10000);
+    } while (result < 0 && errno == EINTR);
+    if (result <= 0) {
+      BAZEL_DIE(blaze_exit_code::LOCAL_ENVIRONMENTAL_ERROR)
+          << "criu: namespace init " << init_pid << " did not exit";
+    }
+  } else if (live) {
+    BAZEL_LOG(WARNING) << "criu: ignoring stale init identity for PID "
+                       << init_pid;
+  }
+  if (pidfd >= 0) {
+    close(pidfd);
+  }
+  // Even an invalid init record marks server.pid.txt as namespace-local. Never
+  // pass that number to the ordinary host-side process-group kill path.
+  for (const char *name : {"server.init_host_pid", "server.init_starttime",
+                           "server.host_pid", kServerPidFile}) {
+    blaze_util::UnlinkPath(server_dir.GetRelative(name));
+  }
+  return true;
+}
+
 bool CriuPreflight(std::string *error) {
   if (!CriuModeActive()) {
     return true;
@@ -797,6 +846,23 @@ bool CriuPreflight(std::string *error) {
                   << " criu=" << (criu_path.empty() ? "(not found)" : criu_path);
 
   vector<string> problems;
+  // Pinning init identity is necessary to avoid killing a recycled PID during
+  // takeover. Check both syscalls before launching a persistent namespace.
+  bool pidfds_available = false;
+#if defined(SYS_pidfd_open) && defined(SYS_pidfd_send_signal)
+  int self_pidfd = syscall(SYS_pidfd_open, getpid(), 0);
+  if (self_pidfd >= 0) {
+    pidfds_available =
+        syscall(SYS_pidfd_send_signal, self_pidfd, 0, nullptr, 0) == 0;
+    close(self_pidfd);
+  }
+#endif
+  if (!pidfds_available) {
+    problems.push_back(
+        "pidfd_open/pidfd_send_signal are unavailable or restricted.\n"
+        "  Use Linux >= 5.3 and allow these syscalls for safe namespace "
+        "teardown.");
+  }
 
   // AppArmor userns restriction (Ubuntu 23.10+): the single most common
   // roadblock. "1" (or higher) blocks unprivileged user namespaces outright.
@@ -881,24 +947,22 @@ int ExecuteDaemonInNamespace(const blaze_util::Path &exe,
                              const blaze_util::Path &server_dir,
                              BlazeServerStartup **server_startup) {
   const blaze_util::Path pid_file = server_dir.GetRelative(kServerPidFile);
-  const blaze_util::Path ns_pid_file = server_dir.GetRelative("server.ns-pid");
   const string daemonize = binaries_dir.GetRelative("daemonize").AsNativePath();
 
-  // A previous unclean shutdown may have left an old proto. Wait for this JVM's
-  // fresh connection metadata before replacing its namespace-local PID.
-  const blaze_util::Path info_file =
-      server_dir.GetRelative("server_info.rawproto");
-  if (blaze_util::PathExists(info_file) && !blaze_util::UnlinkPath(info_file)) {
-    BAZEL_DIE(blaze_exit_code::LOCAL_ENVIRONMENTAL_ERROR)
-        << "criu: could not remove stale server connection metadata: "
-        << info_file.AsPrintablePath();
+  // Do not let the new JVM read host identity left by a previous server.
+  for (const char *name : {"server_info.rawproto", "server.host_pid"}) {
+    const auto path = server_dir.GetRelative(name);
+    if (blaze_util::PathExists(path) && !blaze_util::UnlinkPath(path)) {
+      BAZEL_DIE(blaze_exit_code::LOCAL_ENVIRONMENTAL_ERROR)
+          << "criu: could not remove stale " << path.AsPrintablePath();
+    }
   }
 
   // Same daemonize invocation as ExecuteDaemon, minus the cgroup/systemd
   // options: a rootless user namespace cannot drive systemd-run, and CRIU does
   // not coexist cleanly with cgroup placement here.
   vector<string> fg_argv = {daemonize, "-l", daemon_output.AsNativePath(), "-p",
-                            ns_pid_file.AsNativePath()};
+                            pid_file.AsNativePath()};
   if (daemon_output_append) {
     fg_argv.push_back("-a");
   }
@@ -908,8 +972,10 @@ int ExecuteDaemonInNamespace(const blaze_util::Path &exe,
 
   int fg_code = 0;
   int init_host_pid = 0;
-  if (!RunInNamespace(fg_argv, EnvToStrings(env), &fg_code, &init_host_pid) ||
+  if (!RunInNamespace(fg_argv, EnvToStrings(env), server_dir, &fg_code,
+                      &init_host_pid) ||
       fg_code != 0) {
+    KillNamespacedServer(server_dir);
     BAZEL_DIE(blaze_exit_code::INTERNAL_ERROR)
         << "criu: failed to start namespaced server (daemonize exit "
         << fg_code << "). See " << daemon_output.AsPrintablePath();
@@ -917,31 +983,31 @@ int ExecuteDaemonInNamespace(const blaze_util::Path &exe,
 
   // daemonize has exited, so the pid file exists and holds the server's
   // *namespace-local* pid. Resolve it to the host pid (within our init's PID
-  // namespace) and rewrite the server's on-disk identity so this host-side
+  // namespace) and publish its host identity so this host-side
   // launcher (and later clients) can attach over loopback.
   int ns_pid;
-  if (!ReadPidFile(ns_pid_file, &ns_pid)) {
+  if (!ReadPidFile(pid_file, &ns_pid)) {
+    KillNamespacedServer(server_dir);
     BAZEL_DIE(blaze_exit_code::INTERNAL_ERROR)
         << "criu: failed to read namespaced server pid from "
-        << ns_pid_file.AsPrintablePath();
+        << pid_file.AsPrintablePath();
   }
   const string ns_namespace = PidNamespaceOf(init_host_pid);
   if (ns_namespace.empty()) {
+    KillNamespacedServer(server_dir);
     BAZEL_DIE(blaze_exit_code::INTERNAL_ERROR)
         << "criu: namespaced init exited before server startup.";
   }
   int host_pid =
       MakeReachable(ns_pid, ns_namespace, server_dir, /*timeout_secs=*/10);
   if (host_pid < 0) {
+    KillNamespacedServer(server_dir);
     BAZEL_DIE(blaze_exit_code::INTERNAL_ERROR)
         << "criu: could not make namespaced server (ns pid " << ns_pid
         << ") reachable.";
   }
 
-  if (!blaze_util::WriteFile(std::to_string(host_pid), pid_file)) {
-    BAZEL_DIE(blaze_exit_code::INTERNAL_ERROR)
-        << "criu: could not record the server's host pid.";
-  }
+  // Leave server.pid.txt namespace-local for the JVM's PidFileWatcher.
   *server_startup = new AlwaysAliveServerStartup();
   return host_pid;
 }

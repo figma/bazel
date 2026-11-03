@@ -35,7 +35,7 @@ void SetCriuModeActive(bool active);
 // True only when --criu was requested on Linux.
 bool CriuModeActive();
 
-// Check user namespace sysctls and find an executable criu binary. On failure,
+// Check namespace sysctls, pidfd support, and an executable criu binary. On failure,
 // report the observed settings and how to enable the missing prerequisites.
 // No-op when the mode is inactive or the platform is not Linux.
 bool CriuPreflight(std::string *error);
@@ -47,8 +47,8 @@ bool CriuPreflight(std::string *error);
 // checkpoint.
 //
 // Unlike the plain ExecuteDaemon, this blocks until the server is up and its
-// server_info.rawproto has been rewritten to advertise the server's *host* pid
-// (so ordinary host clients can attach over loopback), and returns that host
+// server_info.rawproto advertises the server's *host* pid (so ordinary host
+// clients can attach over loopback), and returns that host
 // pid. *server_startup is set to an always-alive stub: liveness is established
 // by the subsequent gRPC connect rather than by an inherited socket.
 //
@@ -59,6 +59,12 @@ int ExecuteDaemonInNamespace(
     const blaze_util::Path &daemon_output, bool daemon_output_append,
     const blaze_util::Path &binaries_dir, const blaze_util::Path &server_dir,
     BlazeServerStartup **server_startup);
+
+// Kill the recorded PID-1 init and wait for the entire PID namespace to exit.
+// Validate its start time and namespace-local PID before signalling through a
+// pidfd. Safe regardless of the current --criu flag. Returns true if an init
+// record existed (including stale records); false for an ordinary server.
+bool KillNamespacedServer(const blaze_util::Path &server_dir);
 
 }  // namespace blaze
 

@@ -53,3 +53,20 @@ java_test(
         "//third_party/java/truth",
     ],
 )
+
+java_test(
+    name = "ServerPidInfoItemTest",
+    size = "small",
+    srcs = ["ServerPidInfoItemTest.java"],
+    runtime_deps = ["//third_party/allocation_instrumenter:allocation_instrumenter_runtime"],
+    deps = [
+        "//src/main/java/com/google/devtools/build/lib:runtime",
+        "//src/main/java/com/google/devtools/build/lib/runtime/commands/info",
+        "//src/main/java/com/google/devtools/build/lib/vfs",
+        "//src/main/java/com/google/devtools/build/lib/vfs/inmemoryfs",
+        "//src/main/java/com/google/devtools/common/options",
+        "//third_party:junit4",
+        "//third_party:mockito",
+        "//third_party:truth",
+    ],
+)

@@ -50,6 +50,7 @@
 #include <utility>
 #include <vector>
 
+#include "src/main/cpp/blaze_criu.h"
 #include "src/main/cpp/blaze_util.h"
 #include "src/main/cpp/blaze_util_platform.h"
 #include "src/main/cpp/startup_options.h"
@@ -782,6 +783,12 @@ void ReleaseLock(LockHandle lock_handle) {
 
 bool KillServerProcess(int pid, const blaze_util::Path& output_base,
                        bool from_signal_handler) {
+  // Namespace validation reads files and allocates memory, so it cannot run
+  // from a signal handler.
+  if (!from_signal_handler &&
+      KillNamespacedServer(output_base.GetRelative("server"))) {
+    return true;
+  }
   // Kill the process and make sure it's dead before proceeding.
   errno = 0;
   if (killpg(pid, SIGKILL) == -1) {

@@ -1322,6 +1322,7 @@ public final class BlazeRuntime implements BugReport.BlazeRuntimeInterface {
               startupOptions.getCommandPort(),
               runtime.getServerDirectory(),
               serverPid,
+              startupOptions.getCriu(),
               startupOptions.getMaxIdleSeconds(),
               startupOptions.getShutdownOnLowSysMem(),
               startupOptions.getIdleServerTasks(),

@@ -112,6 +112,7 @@ public final class CommandServerTest {
             RESPONSE_COOKIE,
             serverDirectory,
             SERVER_PID,
+            /* criu= */ false,
             /* maxIdleSeconds= */ 1000,
             /* shutdownOnLowSysMem= */ false,
             /* doIdleServerTasks= */ true,

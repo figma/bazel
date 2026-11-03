@@ -43,6 +43,7 @@ import com.google.devtools.build.lib.server.FailureDetails.FailureDetail;
 import com.google.devtools.build.lib.server.FailureDetails.Filesystem;
 import com.google.devtools.build.lib.server.FailureDetails.Filesystem.Code;
 import com.google.devtools.build.lib.server.FailureDetails.GrpcServer;
+import com.google.devtools.build.lib.server.signal.ControlSignalHandler;
 import com.google.devtools.build.lib.util.AbruptExitException;
 import com.google.devtools.build.lib.util.DetailedExitCode;
 import com.google.devtools.build.lib.util.ExitCode;
@@ -96,6 +97,7 @@ public class CommandServer implements GrpcCommandServer.Callback {
       int port,
       Path serverDirectory,
       int serverPid,
+      boolean criu,
       int maxIdleSeconds,
       boolean shutdownOnLowSysMem,
       boolean idleServerTasks,
@@ -112,6 +114,7 @@ public class CommandServer implements GrpcCommandServer.Callback {
         generateCookie(random, 16),
         serverDirectory,
         serverPid,
+        criu,
         maxIdleSeconds,
         shutdownOnLowSysMem,
         idleServerTasks,
@@ -242,6 +245,8 @@ public class CommandServer implements GrpcCommandServer.Callback {
   private final boolean shutdownOnLowSysMem;
   private final PidFileWatcher pidFileWatcher;
   private final int serverPid;
+  private final boolean criu;
+  @Nullable private ServerInfo serverInfo;
   private final int port;
 
   @VisibleForTesting
@@ -256,6 +261,7 @@ public class CommandServer implements GrpcCommandServer.Callback {
       String responseCookie,
       Path serverDirectory,
       int serverPid,
+      boolean criu,
       int maxIdleSeconds,
       boolean shutdownOnLowSysMem,
       boolean doIdleServerTasks,
@@ -270,6 +276,8 @@ public class CommandServer implements GrpcCommandServer.Callback {
     this.responseCookie = responseCookie;
     this.serverDirectory = serverDirectory;
     this.serverPid = serverPid;
+    this.criu = criu;
+
     this.maxIdleSeconds = maxIdleSeconds;
     this.shutdownOnLowSysMem = shutdownOnLowSysMem;
 
@@ -341,13 +349,20 @@ public class CommandServer implements GrpcCommandServer.Callback {
       timeoutAndMemoryCheckingThread.start();
     }
 
-    writeServerStatusFiles(address);
-
+    ControlSignalHandler hostPidHandler = null;
     try {
+      if (criu) {
+        hostPidHandler = new ControlSignalHandler("WINCH", this::reconcileHostPid);
+      }
+      writeServerStatusFiles(address);
       awaitTermination();
     } catch (InterruptedException e) {
       // TODO(lberki): Handle SIGINT in a reasonable way
       throw new IllegalStateException(e);
+    } finally {
+      if (hostPidHandler != null) {
+        hostPidHandler.uninstall();
+      }
     }
   }
 
@@ -379,14 +394,76 @@ public class CommandServer implements GrpcCommandServer.Callback {
     writeServerFile(REQUEST_COOKIE_FILE, requestCookie);
     writeServerFile(RESPONSE_COOKIE_FILE, responseCookie);
 
+    writeServerInfo(addressString);
+  }
+
+  @VisibleForTesting
+  synchronized void writeServerInfo(String addressString) throws AbruptExitException {
     ServerInfo info =
         ServerInfo.newBuilder()
-            .setPid(serverPid)
+            .setPid(criu ? awaitHostPid() : serverPid)
             .setAddress(addressString)
             .setRequestCookie(requestCookie)
             .setResponseCookie(responseCookie)
             .build();
 
+    writeServerInfoFile(info);
+    shutdownHooks.deleteAtExit(serverDirectory.getChild(SERVER_INFO_FILE));
+    serverInfo = info;
+  }
+
+  private int readHostPid() throws IOException {
+    String contents =
+        new String(
+            FileSystemUtils.readContentAsLatin1(serverDirectory.getChild("server.host_pid")));
+    try {
+      int pid = Integer.parseInt(contents);
+      if (pid > 0) {
+        return pid;
+      }
+    } catch (NumberFormatException e) {
+      throw new IOException("Invalid host PID: " + contents, e);
+    }
+    throw new IOException("Host PID must be positive: " + contents);
+  }
+
+  private int awaitHostPid() throws AbruptExitException {
+    long deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(10);
+    while (true) {
+      try {
+        return readHostPid();
+      } catch (IOException e) {
+        if (System.nanoTime() >= deadline) {
+          throw createFilesystemFailureException("Timed out waiting for server.host_pid", e);
+        }
+      }
+      try {
+        Thread.sleep(50);
+      } catch (InterruptedException e) {
+        Thread.currentThread().interrupt();
+        throw createFilesystemFailureException(
+            "Interrupted waiting for server.host_pid", new IOException(e));
+      }
+    }
+  }
+
+  // SIGWINCH survives checkpoint/restore. Rebuild from in-memory state, never
+  // from connection metadata that may belong to the pre-restore process.
+  @VisibleForTesting
+  synchronized void reconcileHostPid() {
+    if (!criu || serverInfo == null) {
+      return;
+    }
+    try {
+      ServerInfo updated = serverInfo.toBuilder().setPid(readHostPid()).build();
+      writeServerInfoFile(updated);
+      serverInfo = updated;
+    } catch (IOException | AbruptExitException e) {
+      logger.atWarning().withCause(e).log("Could not reconcile server host PID");
+    }
+  }
+
+  private void writeServerInfoFile(ServerInfo info) throws AbruptExitException {
     // Write then mv so the user never sees incomplete contents.
     Path serverInfoTmpFile = serverDirectory.getChild(SERVER_INFO_FILE + ".tmp");
     try {
@@ -395,7 +472,6 @@ public class CommandServer implements GrpcCommandServer.Callback {
       }
       Path serverInfoFile = serverDirectory.getChild(SERVER_INFO_FILE);
       serverInfoTmpFile.renameTo(serverInfoFile);
-      shutdownHooks.deleteAtExit(serverInfoFile);
     } catch (IOException e) {
       throw createFilesystemFailureException("Failed to write server info file", e);
     }
