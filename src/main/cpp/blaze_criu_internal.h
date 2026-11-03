@@ -15,6 +15,8 @@
 #ifndef BAZEL_SRC_MAIN_CPP_BLAZE_CRIU_INTERNAL_H_
 #define BAZEL_SRC_MAIN_CPP_BLAZE_CRIU_INTERNAL_H_
 
+#include "src/main/cpp/util/path.h"
+
 namespace blaze {
 namespace criu_internal {
 
@@ -40,6 +42,10 @@ struct InitControl {
 // Serve one connected Unix control socket from init. Returns whether a
 // successful dump requested teardown. Uses only syscalls and stack storage.
 bool HandleCheckpointRequest(const InitControl& paths, int connection);
+
+// Recreate live identity and startup files from immutable checkpoint metadata.
+// Must run before the JVM resumes; never modifies the snapshot itself.
+bool PrepareRestore(const blaze_util::Path& output_base, int* ns_pid);
 
 }  // namespace criu_internal
 }  // namespace blaze

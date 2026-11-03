@@ -23,7 +23,7 @@ After restore, the launcher must recreate that local PID file before resuming
 the JVM, publish the new host PID and start time, and send `SIGWINCH`. The signal
 handler survives checkpointing and rewrites connection metadata from the JVM's
 in-memory address and cookies. The launcher waits for the advertised host PID to
-match before attaching. The restore command comes later.
+match before attaching.
 
 The launcher also records `server/server.init_host_pid` and
 `server/server.init_starttime` before waiting for server startup. Shutdown,
@@ -74,7 +74,7 @@ its network namespace should match the client's. `server/cmdline` should contain
 `-XX:+PerfDisableSharedMem`. No `hsperfdata` file should be mapped.
 
 Use the same flags with `shutdown` to stop the server and its init. `--batch`
-cannot be combined with `--criu`. Restore is introduced separately.
+cannot be combined with `--criu`.
 
 The integration test `//src/test/shell/integration:criu_test` checks reuse,
 shutdown, forced cancellation, and takeover. It skips the namespaced lifecycle
@@ -112,10 +112,12 @@ stop path init tears down the namespace after acknowledging success. Keep the
 output-base path short enough for Linux's 108-byte Unix socket address limit.
 
 Images and `dump.log` are written under `$OB/criu`, along with the
-namespace-local `ns-pid`, a connection-metadata snapshot, and the `install-key`
-identifying the packaged binary. The install key is published only after a
-successful dump; failed attempts invalidate a previous key. Restore will be
-added in the next group.
+namespace-local `ns-pid`, a connection-metadata snapshot, NUL-separated
+`startup-args`, and the `install-key` identifying the packaged binary. The
+arguments come from the running server's `server/cmdline`, even if the checkpoint
+client specifies different JVM settings. The install key is published only after
+a successful dump and argument recording; failed attempts invalidate a previous
+key. There is one snapshot per output base; a new checkpoint overwrites it.
 
 Readiness is bounded to 120 seconds and the dump to five minutes. Interrupting
 the launcher cancels the dump; init terminates and reaps CRIU before replying.
@@ -128,3 +130,44 @@ exercises the real command lock and late cancellation. Native tests cover dump
 flags, control-socket cancellation, and stalled or severed RPCs with a stand-in
 dump executable. The integration suite also checks real checkpoint-and-keep and
 checkpoint-and-stop when CRIU and private proc mounts are available.
+
+## Restore and reuse a checkpoint
+
+When no server is reachable, a `--criu` invocation checks `$OB/criu` before cold
+startup. It requires the same packaged binary and checkpoint-time startup
+arguments. JVM argument order and repetition must match, including heap settings
+and system properties. Client-only options such as connection timeouts, debug
+logging, and option-source annotations may differ. Missing metadata from older
+checkpoints rejects reuse. Rejection explains the mismatch and cold-starts;
+it never rewrites a checkpoint to claim different settings.
+
+Restore creates a fresh namespace and persistent init, with host networking.
+Before CRIU resumes the JVM, the launcher recreates the namespace-local PID
+watcher's file, the saved connection metadata, and the original `server/cmdline`.
+Init removes the checkpoint request and sentinel before launching CRIU, releasing
+the parked checkpoint command as soon as the JVM resumes. The launcher then
+publishes the new host identity, sends `SIGWINCH`, and reconnects using normal
+PID/start-time validation and authenticated gRPC ping.
+
+Restore failures report the cause and `$OB/criu/restore.log` when CRIU was run.
+The launcher kills the failed restore's init and server tree before cold startup.
+Each invocation tries the snapshot once, so a restored server rejected by the
+workspace-directory check cannot cause a restore loop. The CRIU subprocess
+wait is bounded to five minutes. Restoring does not modify
+the images or compatibility metadata, so the same checkpoint can be restored
+again after a graceful shutdown deletes the live server files:
+
+```sh
+"$BAZEL" --criu --output_base="$OB" checkpoint
+"$BAZEL" --criu --output_base="$OB" info server_pid  # restore
+"$BAZEL" --criu --output_base="$OB" shutdown
+"$BAZEL" --criu --output_base="$OB" info server_pid  # restore the same snapshot
+```
+
+Keep the output base and installation paths in place: snapshots are local to
+those paths. The integration suite checks repeated restore, reattachment, JVM
+argument rejection, and cold fallback after damaged images on a capable host.
+Native tests independently exercise argument order/multiplicity, immutable
+metadata, and reconstruction after live-file deletion. In the current restricted
+validation container, CRIU is absent and private `/proc` mounts are denied, so
+the real dump/restore integration cases are skipped.

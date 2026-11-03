@@ -235,9 +235,81 @@ function test_criu_checkpoint_leaves_running_or_stops() {
   [[ ! -e "${ob}/server/checkpoint.request" ]] || fail "Stale checkpoint request"
 }
 
+function test_criu_restores_repeatedly_and_rejects_different_jvm_args() {
+  require_criu_namespaces || return 0
+  local ob="${TEST_TMPDIR}/criu-restore"
+  local jvm_arg="-Dcriu.test.setting=original"
+  bazel --criu --output_base="${ob}" --host_jvm_args="${jvm_arg}" \
+      info server_pid >"${TEST_log}" 2>&1 || fail "Namespaced startup failed"
+  # The checkpoint client's arguments must not relabel the running JVM.
+  bazel --criu --output_base="${ob}" --host_jvm_args=-Dcriu.test.setting=client \
+      checkpoint >"${TEST_log}" 2>&1 || fail "Checkpoint failed"
+  cmp "${ob}/server/cmdline" "${ob}/criu/startup-args" \
+      || fail "Checkpoint did not record the running JVM's arguments"
+  local saved_pid
+  saved_pid=$(cat "${ob}/criu/ns-pid")
+  local attempt server_pid init_pid
+  for attempt in 1 2; do
+    bazel --criu --output_base="${ob}" --host_jvm_args="${jvm_arg}" \
+        info server_pid >"${TEST_log}" 2>&1 || fail "Restore ${attempt} failed"
+    expect_log "criu: restored server at host PID"
+    expect_not_log "Starting local"
+    server_pid=$(cat "${ob}/server/server.host_pid")
+    init_pid=$(cat "${ob}/server/server.init_host_pid")
+    expect_log "^${server_pid}$"
+    [[ "${saved_pid}" == "$(cat "${ob}/server/server.pid.txt")" ]] \
+        || fail "Restored local PID changed"
+    [[ ! -e "${ob}/server/checkpoint.sentinel" && \
+       ! -e "${ob}/server/checkpoint.request" ]] || fail "Restored server is parked"
+    sleep 4  # Exercise the restored PID watcher before attaching again.
+    bazel --criu --output_base="${ob}" --host_jvm_args="${jvm_arg}" \
+        info server_pid >"${TEST_log}" 2>&1 || fail "Could not reattach after restore"
+    expect_log "^${server_pid}$"
+    expect_not_log "criu: restoring"
+    bazel --criu --output_base="${ob}" --host_jvm_args="${jvm_arg}" \
+        shutdown >"${TEST_log}" 2>&1 || fail "Restored server shutdown failed"
+    assert_process_gone "${server_pid}"
+    assert_process_gone "${init_pid}"
+  done
+
+  bazel --criu --output_base="${ob}" --host_jvm_args=-Dcriu.test.setting=changed \
+      info server_pid >"${TEST_log}" 2>&1 || fail "Incompatible cold start failed"
+  expect_log "ignoring checkpoint: checkpoint-time startup arguments differ"
+  expect_log "Starting local"
+  expect_not_log "criu: restoring"
+  bazel --criu --output_base="${ob}" --host_jvm_args=-Dcriu.test.setting=changed \
+      shutdown >"${TEST_log}" 2>&1 || fail "Cold server shutdown failed"
+  # Rejection must leave the original snapshot reusable.
+  bazel --criu --output_base="${ob}" --host_jvm_args="${jvm_arg}" \
+      info server_pid >"${TEST_log}" 2>&1 || fail "Original snapshot was changed"
+  expect_log "criu: restored server at host PID"
+}
+
+function test_criu_restore_failure_falls_back_to_cold_start() {
+  require_criu_namespaces || return 0
+  local ob="${TEST_TMPDIR}/criu-restore-failure"
+  bazel --criu --output_base="${ob}" info server_pid >"${TEST_log}" 2>&1 \
+      || fail "Namespaced startup failed"
+  bazel --criu --output_base="${ob}" checkpoint >"${TEST_log}" 2>&1 \
+      || fail "Checkpoint failed"
+  # Leave compatibility metadata intact, but make CRIU fail after init starts.
+  rm "${ob}/criu/inventory.img"
+  bazel --criu --output_base="${ob}" info server_pid >"${TEST_log}" 2>&1 \
+      || fail "Cold fallback failed"
+  expect_log "criu: restore failed"
+  expect_log "criu: falling back to cold startup"
+  expect_log "Starting local"
+  local server_pid
+  server_pid=$(cat "${ob}/server/server.host_pid")
+  bazel --criu --output_base="${ob}" info server_pid >"${TEST_log}" 2>&1 \
+      || fail "Could not attach to fallback server"
+  expect_log "^${server_pid}$"
+  expect_not_log "criu: restoring"
+}
+
 function tear_down() {
   local ob init_pid
-  for ob in "${TEST_TMPDIR}"/criu-{reuse,takeover,mode-switch,cancel,checkpoint}; do
+  for ob in "${TEST_TMPDIR}"/criu-{reuse,takeover,mode-switch,cancel,checkpoint,restore,restore-failure}; do
     if [[ -f "${ob}/server/server.init_host_pid" ]]; then
       init_pid=$(cat "${ob}/server/server.init_host_pid")
       if [[ -f "/proc/${init_pid}/status" ]] && \
