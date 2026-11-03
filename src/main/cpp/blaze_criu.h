@@ -19,6 +19,7 @@
 #ifndef BAZEL_SRC_MAIN_CPP_BLAZE_CRIU_H_
 #define BAZEL_SRC_MAIN_CPP_BLAZE_CRIU_H_
 
+#include <functional>
 #include <map>
 #include <string>
 #include <vector>
@@ -59,6 +60,18 @@ int ExecuteDaemonInNamespace(
     const blaze_util::Path &daemon_output, bool daemon_output_append,
     const blaze_util::Path &binaries_dir, const blaze_util::Path &server_dir,
     BlazeServerStartup **server_startup);
+
+// Coordination files and the init's host-reachable Unix control socket.
+blaze_util::Path CriuCheckpointSentinelPath(
+    const blaze_util::Path& output_base);
+blaze_util::Path ControlSocketPath(const blaze_util::Path& output_base);
+
+// Dump a quiescent server from inside its namespaces. A successful stop request
+// also tears down init and the entire server tree. Cancellation aborts the
+// dump.
+int CriuCheckpoint(const blaze_util::Path& output_base,
+                   const std::string& install_key, bool stop,
+                   const std::function<bool()>& cancelled);
 
 // Kill the recorded PID-1 init and wait for the entire PID namespace to exit.
 // Validate its start time and namespace-local PID before signalling through a

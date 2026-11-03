@@ -39,6 +39,7 @@ cc_library(
     }),
     hdrs = [
         "blaze_criu.h",
+        "blaze_criu_internal.h",
         "blaze_util.h",
         "blaze_util_platform.h",
     ],
@@ -123,6 +124,20 @@ windows_resources(
     resources = ["bazel.ico"],
 )
 
+cc_library(
+    name = "blaze_criu_client",
+    srcs = ["blaze_criu_client.cc"],
+    hdrs = ["blaze_criu_client.h"],
+    deps = [
+        ":blaze_util",
+        "//src/main/cpp/util",
+        "//src/main/cpp/util:blaze_exit_code",
+        "//src/main/cpp/util:logging",
+        "//src/main/protobuf:command_server_cc_grpc",
+        "//src/main/protobuf:command_server_cc_proto",
+    ],
+)
+
 cc_binary(
     name = "client",
     srcs = [
@@ -170,6 +185,7 @@ cc_binary(
     deps = [
         ":archive_utils",
         ":bazel_startup_options",
+        ":blaze_criu_client",
         ":blaze_util",
         ":command_extension_adder",
         ":option_processor",

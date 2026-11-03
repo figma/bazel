@@ -24,7 +24,7 @@ sh_library(
 
 sh_test(
     name = "criu_test",
-    size = "medium",
+    size = "large",
     srcs = ["criu_test.sh"],
     data = [
         ":test-deps",

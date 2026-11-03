@@ -17,19 +17,24 @@
 #include <string>
 
 #ifdef __linux__
-#include <cerrno>
-#include <cstdlib>
-#include <fstream>
 #include <sched.h>
 #include <signal.h>
-#include <sstream>
+#include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/un.h>
 #include <sys/wait.h>
 #include <unistd.h>
+
+#include <cerrno>
+#include <cstdlib>
+#include <cstring>
+#include <fstream>
+#include <sstream>
 #include <vector>
 #endif
 
 #include "googletest/include/gtest/gtest.h"
+#include "src/main/cpp/blaze_criu_internal.h"
 #include "src/main/cpp/blaze_util.h"
 #include "src/main/cpp/util/file.h"
 
@@ -78,7 +83,7 @@ TEST_F(CriuModeTest, ExecutableDirectoryIsNotACriuBinary) {
 class NamespaceTeardownTest : public ::testing::Test {
 protected:
   void SetUp() override {
-    std::string pattern = ::testing::TempDir() + "criu-identity-XXXXXX";
+    std::string pattern = "/tmp/criu-identity-XXXXXX";
     std::vector<char> name(pattern.begin(), pattern.end());
     name.push_back(0);
     ASSERT_NE(mkdtemp(name.data()), nullptr);
@@ -241,6 +246,161 @@ TEST_F(NamespaceTeardownTest, MalformedRecordDoesNotFallBackToLocalPid) {
   EXPECT_TRUE(KillNamespacedServer(server_dir_));
   EXPECT_FALSE(
       blaze_util::PathExists(server_dir_.GetRelative("server.pid.txt")));
+}
+
+class CheckpointControlTest : public NamespaceTeardownTest {
+ protected:
+  void SetUp() override {
+    NamespaceTeardownTest::SetUp();
+    images_ = output_base_.GetRelative("criu");
+    ASSERT_TRUE(blaze_util::MakeDirectories(images_, 0700));
+    binary_ = output_base_.GetRelative("fake-criu");
+    Write("server.pid.txt", "3");
+    Write("checkpoint.request", "request-token");
+    Write("checkpoint.sentinel", "request-token");
+    ASSERT_TRUE(
+        blaze_util::WriteFile("connection-metadata",
+                              server_dir_.GetRelative("server_info.rawproto")));
+    ASSERT_TRUE(blaze_util::WriteFile(
+        "#!/bin/sh\nprintf '%s\\n' \"$@\" > '" +
+            output_base_.GetRelative("dump-args").AsNativePath() +
+            "'\nexit 0\n",
+        binary_, 0700));
+  }
+
+  void TearDown() override {
+    if (control_ > 0) {
+      kill(control_, SIGKILL);
+      waitpid(control_, nullptr, 0);
+    }
+    NamespaceTeardownTest::TearDown();
+    blaze_util::RemoveRecursively(output_base_);
+  }
+
+  void StartControl() {
+    int listener = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+    ASSERT_GE(listener, 0);
+    struct sockaddr_un addr = {};
+    addr.sun_family = AF_UNIX;
+    auto socket_path = ControlSocketPath(output_base_).AsNativePath();
+    ASSERT_LT(socket_path.size(), sizeof(addr.sun_path));
+    memcpy(addr.sun_path, socket_path.c_str(), socket_path.size() + 1);
+    ASSERT_EQ(
+        bind(listener, reinterpret_cast<struct sockaddr*>(&addr), sizeof(addr)),
+        0);
+    ASSERT_EQ(listen(listener, 1), 0);
+    std::string pid_file =
+        server_dir_.GetRelative("server.pid.txt").AsNativePath();
+    std::string ns_pid = images_.GetRelative("ns-pid").AsNativePath();
+    std::string info =
+        server_dir_.GetRelative("server_info.rawproto").AsNativePath();
+    std::string snapshot =
+        images_.GetRelative("server_info.rawproto").AsNativePath();
+    std::string sentinel =
+        server_dir_.GetRelative("checkpoint.sentinel").AsNativePath();
+    std::string request =
+        server_dir_.GetRelative("checkpoint.request").AsNativePath();
+    std::string images = images_.AsNativePath();
+    std::string binary = binary_.AsNativePath();
+    criu_internal::InitControl ctl = {
+        socket_path.c_str(), binary.c_str(),   images.c_str(),
+        ns_pid.c_str(),      pid_file.c_str(), info.c_str(),
+        snapshot.c_str(),    sentinel.c_str(), request.c_str()};
+    control_ = fork();
+    ASSERT_GE(control_, 0);
+    if (control_ == 0) {
+      int conn = accept(listener, nullptr, nullptr);
+      bool stop = criu_internal::HandleCheckpointRequest(ctl, conn);
+      close(conn);
+      _exit(stop ? 2 : 0);
+    }
+    close(listener);
+  }
+
+  void ExpectControlExit(bool stop) {
+    int status;
+    ASSERT_EQ(waitpid(control_, &status, 0), control_);
+    control_ = -1;
+    ASSERT_TRUE(WIFEXITED(status));
+    EXPECT_EQ(WEXITSTATUS(status), stop ? 2 : 0);
+  }
+
+  blaze_util::Path images_;
+  blaze_util::Path binary_;
+  int control_ = -1;
+};
+
+TEST_F(CheckpointControlTest, LeaveRunningRecordsMetadataAndDumpFlags) {
+  StartControl();
+  EXPECT_EQ(
+      CriuCheckpoint(output_base_, "install-key", false, [] { return false; }),
+      0);
+  ExpectControlExit(false);
+  std::string args, pid, key, snapshot;
+  ASSERT_TRUE(
+      blaze_util::ReadFile(output_base_.GetRelative("dump-args"), &args));
+  EXPECT_NE(args.find("dump\n--tree\n3\n"), std::string::npos);
+  for (const auto* flag :
+       {"--leave-running", "--tcp-close", "--file-locks", "--unprivileged"}) {
+    EXPECT_NE(args.find(flag), std::string::npos);
+  }
+  ASSERT_TRUE(blaze_util::ReadFile(images_.GetRelative("ns-pid"), &pid));
+  EXPECT_EQ(pid, "3");
+  ASSERT_TRUE(blaze_util::ReadFile(images_.GetRelative("install-key"), &key));
+  EXPECT_EQ(key, "install-key");
+  ASSERT_TRUE(blaze_util::ReadFile(images_.GetRelative("server_info.rawproto"),
+                                   &snapshot));
+  EXPECT_EQ(snapshot, "connection-metadata");
+}
+
+TEST_F(CheckpointControlTest, DefaultStopRequestsTeardownAfterSuccessfulDump) {
+  StartControl();
+  EXPECT_EQ(CriuCheckpoint(output_base_, "key", true, [] { return false; }), 0);
+  ExpectControlExit(true);
+}
+
+TEST_F(CheckpointControlTest, FailedDumpReleasesLeaseAndInvalidatesOldImages) {
+  ASSERT_TRUE(blaze_util::WriteFile("#!/bin/sh\nexit 1\n", binary_, 0700));
+  ASSERT_TRUE(
+      blaze_util::WriteFile("stale-key", images_.GetRelative("install-key")));
+  StartControl();
+  EXPECT_EQ(CriuCheckpoint(output_base_, "key", true, [] { return false; }),
+            36);
+  ExpectControlExit(false);
+  EXPECT_FALSE(blaze_util::PathExists(images_.GetRelative("install-key")));
+  EXPECT_FALSE(
+      blaze_util::PathExists(server_dir_.GetRelative("checkpoint.request")));
+  EXPECT_FALSE(
+      blaze_util::PathExists(server_dir_.GetRelative("checkpoint.sentinel")));
+}
+
+TEST_F(CheckpointControlTest, CancelKillsAndReapsDumpBeforeReleasingServer) {
+  auto started = output_base_.GetRelative("dump-started");
+  ASSERT_TRUE(blaze_util::WriteFile(
+      "#!/bin/sh\necho $$ > '" + started.AsNativePath() + "'\nexec sleep 600\n",
+      binary_, 0700));
+  StartControl();
+  EXPECT_EQ(CriuCheckpoint(output_base_, "key", true,
+                           [&] { return blaze_util::PathExists(started); }),
+            8);
+  ExpectControlExit(false);
+  std::string pid;
+  ASSERT_TRUE(blaze_util::ReadFile(started, &pid));
+  EXPECT_EQ(kill(atoi(pid.c_str()), 0), -1);
+  EXPECT_EQ(errno, ESRCH);
+  EXPECT_FALSE(
+      blaze_util::PathExists(server_dir_.GetRelative("checkpoint.request")));
+  EXPECT_FALSE(
+      blaze_util::PathExists(server_dir_.GetRelative("checkpoint.sentinel")));
+}
+
+TEST_F(CheckpointControlTest, RefusesDumpWithoutMatchingReadiness) {
+  Write("checkpoint.sentinel", "previous-request");
+  StartControl();
+  EXPECT_EQ(CriuCheckpoint(output_base_, "key", false, [] { return false; }),
+            36);
+  ExpectControlExit(false);
+  EXPECT_FALSE(blaze_util::PathExists(output_base_.GetRelative("dump-args")));
 }
 #endif
 
