@@ -73,6 +73,20 @@ int CriuCheckpoint(const blaze_util::Path& output_base,
                    const std::string& install_key, bool stop,
                    const std::function<bool()>& cancelled);
 
+// Check immutable checkpoint metadata before changing any live server files.
+// JVM arguments are compared in order, including repeated flags. Missing
+// metadata (including checkpoints predating startup-argument recording) rejects
+// reuse. Client-only startup options may differ.
+bool CriuCheckpointExists(const blaze_util::Path& output_base,
+                          const std::string& install_key,
+                          const std::vector<std::string>& server_args);
+
+// Restore a previously validated checkpoint under a fresh init. Recreate live
+// files before resuming the JVM, reconcile its host identity, and leave the
+// namespace ready for Connect(). On failure, report the cause and tear down
+// the new namespace so the caller can cold-start safely.
+bool CriuRestore(const blaze_util::Path& output_base);
+
 // Kill the recorded PID-1 init and wait for the entire PID namespace to exit.
 // Validate its start time and namespace-local PID before signalling through a
 // pidfd. Safe regardless of the current --criu flag. Returns true if an init

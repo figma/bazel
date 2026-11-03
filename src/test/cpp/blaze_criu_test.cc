@@ -37,6 +37,7 @@
 #include "src/main/cpp/blaze_criu_internal.h"
 #include "src/main/cpp/blaze_util.h"
 #include "src/main/cpp/util/file.h"
+#include "src/main/cpp/util/strings.h"
 
 namespace blaze {
 namespace {
@@ -258,6 +259,8 @@ class CheckpointControlTest : public NamespaceTeardownTest {
     Write("server.pid.txt", "3");
     Write("checkpoint.request", "request-token");
     Write("checkpoint.sentinel", "request-token");
+    blaze_util::JoinStrings(args_, '\0', &serialized_args_);
+    Write("cmdline", serialized_args_);
     ASSERT_TRUE(
         blaze_util::WriteFile("connection-metadata",
                               server_dir_.GetRelative("server_info.rawproto")));
@@ -327,6 +330,14 @@ class CheckpointControlTest : public NamespaceTeardownTest {
 
   blaze_util::Path images_;
   blaze_util::Path binary_;
+  std::vector<std::string> args_ = {"bazel",
+                                    "-Xmx1g",
+                                    "-Dsetting=first",
+                                    "-Dsetting=last",
+                                    "--criu",
+                                    "--client_debug=false",
+                                    "--option_sources=original"};
+  std::string serialized_args_;
   int control_ = -1;
 };
 
@@ -336,7 +347,7 @@ TEST_F(CheckpointControlTest, LeaveRunningRecordsMetadataAndDumpFlags) {
       CriuCheckpoint(output_base_, "install-key", false, [] { return false; }),
       0);
   ExpectControlExit(false);
-  std::string args, pid, key, snapshot;
+  std::string args, pid, key, snapshot, startup_args;
   ASSERT_TRUE(
       blaze_util::ReadFile(output_base_.GetRelative("dump-args"), &args));
   EXPECT_NE(args.find("dump\n--tree\n3\n"), std::string::npos);
@@ -351,6 +362,111 @@ TEST_F(CheckpointControlTest, LeaveRunningRecordsMetadataAndDumpFlags) {
   ASSERT_TRUE(blaze_util::ReadFile(images_.GetRelative("server_info.rawproto"),
                                    &snapshot));
   EXPECT_EQ(snapshot, "connection-metadata");
+  ASSERT_TRUE(
+      blaze_util::ReadFile(images_.GetRelative("startup-args"), &startup_args));
+  EXPECT_EQ(startup_args, serialized_args_);
+  EXPECT_TRUE(CriuCheckpointExists(output_base_, "install-key", args_));
+}
+
+TEST_F(CheckpointControlTest, CompatibilityUsesImmutableOrderedStartupArgs) {
+  StartControl();
+  ASSERT_EQ(CriuCheckpoint(output_base_, "key", false, [] { return false; }),
+            0);
+  ExpectControlExit(false);
+  EXPECT_TRUE(CriuCheckpointExists(output_base_, "key", args_));
+  EXPECT_FALSE(CriuCheckpointExists(output_base_, "different-binary", args_));
+
+  auto changed = args_;
+  changed[1] = "-Xmx2g";
+  // Even if a subsequent cold start left matching live arguments, the immutable
+  // checkpoint must still reject different JVM settings.
+  std::string serialized;
+  blaze_util::JoinStrings(changed, '\0', &serialized);
+  Write("cmdline", serialized);
+  EXPECT_FALSE(CriuCheckpointExists(output_base_, "key", changed));
+  EXPECT_TRUE(CriuCheckpointExists(output_base_, "key", args_));
+
+  changed = args_;
+  std::swap(changed[2], changed[3]);
+  EXPECT_FALSE(CriuCheckpointExists(output_base_, "key", changed));
+  changed = args_;
+  changed.insert(changed.begin() + 2, "-Xmx1g");
+  EXPECT_FALSE(CriuCheckpointExists(output_base_, "key", changed));
+
+  changed = args_;
+  changed[5] = "--client_debug=true";
+  changed[6] = "--option_sources=another-bazelrc";
+  changed.push_back("--connect_timeout_secs=60");
+  EXPECT_TRUE(CriuCheckpointExists(output_base_, "key", changed));
+
+  ASSERT_TRUE(blaze_util::UnlinkPath(images_.GetRelative("startup-args")));
+  EXPECT_FALSE(CriuCheckpointExists(output_base_, "key", args_));
+}
+
+TEST_F(CheckpointControlTest, RecreatesServerFilesForRepeatedRestore) {
+  StartControl();
+  ASSERT_EQ(CriuCheckpoint(output_base_, "key", false, [] { return false; }),
+            0);
+  ExpectControlExit(false);
+  for (int restore = 0; restore < 2; ++restore) {
+    // A graceful JVM shutdown deletes its live files, possibly the whole dir.
+    blaze_util::RemoveRecursively(server_dir_);
+    int ns_pid = 0;
+    ASSERT_TRUE(criu_internal::PrepareRestore(output_base_, &ns_pid));
+    EXPECT_EQ(ns_pid, 3);
+    std::string contents;
+    ASSERT_TRUE(blaze_util::ReadFile(server_dir_.GetRelative("server.pid.txt"),
+                                     &contents));
+    EXPECT_EQ(contents, "3");  // A newline would make the JVM halt on resume.
+    ASSERT_TRUE(blaze_util::ReadFile(
+        server_dir_.GetRelative("server_info.rawproto"), &contents));
+    EXPECT_EQ(contents, "connection-metadata");
+    ASSERT_TRUE(
+        blaze_util::ReadFile(server_dir_.GetRelative("cmdline"), &contents));
+    EXPECT_EQ(contents, serialized_args_);
+    EXPECT_TRUE(CriuCheckpointExists(output_base_, "key", args_));
+  }
+}
+
+TEST_F(CheckpointControlTest, RestoreReplacesStaleFilesBeforeResuming) {
+  StartControl();
+  ASSERT_EQ(CriuCheckpoint(output_base_, "key", false, [] { return false; }),
+            0);
+  ExpectControlExit(false);
+  Write("server.pid.txt", "12345");
+  Write("server.host_pid", "67890");
+  Write("server.starttime", "old-start-time");
+  Write("server_info.rawproto", "wrong-port-and-cookies");
+  Write("cmdline", "different-jvm-settings");
+  int ns_pid = 0;
+  ASSERT_TRUE(criu_internal::PrepareRestore(output_base_, &ns_pid));
+  std::string contents;
+  ASSERT_TRUE(blaze_util::ReadFile(
+      server_dir_.GetRelative("server_info.rawproto"), &contents));
+  EXPECT_EQ(contents, "connection-metadata");
+  ASSERT_TRUE(
+      blaze_util::ReadFile(server_dir_.GetRelative("cmdline"), &contents));
+  EXPECT_EQ(contents, serialized_args_);
+  EXPECT_FALSE(
+      blaze_util::PathExists(server_dir_.GetRelative("server.host_pid")));
+  EXPECT_FALSE(
+      blaze_util::PathExists(server_dir_.GetRelative("server.starttime")));
+}
+
+TEST_F(CheckpointControlTest, RestoreRejectsMissingMetadataAndInvalidLocalPid) {
+  StartControl();
+  ASSERT_EQ(CriuCheckpoint(output_base_, "key", false, [] { return false; }),
+            0);
+  ExpectControlExit(false);
+  ASSERT_TRUE(blaze_util::WriteFile("1", images_.GetRelative("ns-pid")));
+  EXPECT_FALSE(CriuCheckpointExists(output_base_, "key", args_));
+  int ns_pid;
+  EXPECT_FALSE(criu_internal::PrepareRestore(output_base_, &ns_pid));
+  ASSERT_TRUE(blaze_util::WriteFile("3", images_.GetRelative("ns-pid")));
+  ASSERT_TRUE(
+      blaze_util::UnlinkPath(images_.GetRelative("server_info.rawproto")));
+  EXPECT_FALSE(CriuCheckpointExists(output_base_, "key", args_));
+  EXPECT_FALSE(criu_internal::PrepareRestore(output_base_, &ns_pid));
 }
 
 TEST_F(CheckpointControlTest, DefaultStopRequestsTeardownAfterSuccessfulDump) {
@@ -372,6 +488,16 @@ TEST_F(CheckpointControlTest, FailedDumpReleasesLeaseAndInvalidatesOldImages) {
       blaze_util::PathExists(server_dir_.GetRelative("checkpoint.request")));
   EXPECT_FALSE(
       blaze_util::PathExists(server_dir_.GetRelative("checkpoint.sentinel")));
+}
+
+TEST_F(CheckpointControlTest, FailedArgumentRecordingDoesNotPublishSuccessKey) {
+  ASSERT_TRUE(
+      blaze_util::MakeDirectories(images_.GetRelative("startup-args"), 0700));
+  StartControl();
+  EXPECT_EQ(CriuCheckpoint(output_base_, "key", false, [] { return false; }),
+            36);
+  ExpectControlExit(false);
+  EXPECT_FALSE(blaze_util::PathExists(images_.GetRelative("install-key")));
 }
 
 TEST_F(CheckpointControlTest, CancelKillsAndReapsDumpBeforeReleasingServer) {

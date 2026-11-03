@@ -39,6 +39,7 @@ constexpr char kControlSockName[] = "bazel-criu.sock";
 constexpr char kNsPidFile[] = "ns-pid";
 constexpr char kServerInfoName[] = "server_info.rawproto";
 constexpr char kInstallKeyFile[] = "install-key";
+constexpr char kStartupArgsFile[] = "startup-args";
 bool g_criu_mode_active = false;
 }  // namespace
 
@@ -69,6 +70,11 @@ namespace blaze {
 bool CriuPreflight(std::string *) { return true; }
 
 bool KillNamespacedServer(const blaze_util::Path &) { return false; }
+bool CriuCheckpointExists(const blaze_util::Path&, const string&,
+                          const vector<string>&) {
+  return false;
+}
+bool CriuRestore(const blaze_util::Path&) { return false; }
 int CriuCheckpoint(const blaze_util::Path&, const string&, bool,
                    const std::function<bool()>&) {
   return blaze_exit_code::BAD_ARGV;
@@ -622,10 +628,10 @@ bool HandleControlConn(const InitControl* ctl, int conn) {
 
   // The init also clears a checkpoint park before a future restore resumes
   // the JVM. On a fresh start these files do not exist.
-  unlink(ctl->request_file);
-  unlink(ctl->sentinel_file);
+  bool released = (unlink(ctl->request_file) == 0 || errno == ENOENT) &&
+                  (unlink(ctl->sentinel_file) == 0 || errno == ENOENT);
 
-  if (sfd < 0 || lfd < 0) {
+  if (sfd < 0 || lfd < 0 || !released) {
     ChildPerror("checkpoint control setup");
     char code = 1;
     (void)!write(status_wfd, &code, 1);
@@ -754,7 +760,7 @@ bool RecordInit(const blaze_util::Path &server_dir, int init_pid);
 // child. Mirrors horapha's nsrun.Run + runInit.
 bool RunInNamespace(const vector<string>& fg_argv, const vector<string>& fg_env,
                     const blaze_util::Path& server_dir, const InitControl* ctl,
-                    int* fg_code, int* init_host_pid) {
+                    int* fg_code, int* init_host_pid, int timeout_secs = 0) {
   // Build the NULL-terminated argv/envp arrays BEFORE forking, so the post-fork
   // code paths perform no heap allocation and stay async-fork-safe. The backing
   // string vectors must outlive the fork.
@@ -892,7 +898,22 @@ bool RunInNamespace(const vector<string>& fg_argv, const vector<string>& fg_env,
   }
 
   char code = 0;
-  ssize_t n = read(status_pipe[0], &code, 1);
+  ssize_t n = -1;
+  const auto deadline =
+      std::chrono::steady_clock::now() + std::chrono::seconds(timeout_secs);
+  struct pollfd status_ready = {status_pipe[0], POLLIN, 0};
+  while (true) {
+    int wait_ms = timeout_secs == 0 ? -1 : 100;
+    if (timeout_secs != 0 && std::chrono::steady_clock::now() >= deadline) {
+      BAZEL_LOG(USER) << "criu: timed out waiting for namespaced command";
+      break;
+    }
+    int r = poll(&status_ready, 1, wait_ms);
+    if (r < 0 && errno == EINTR) continue;
+    if (r == 0) continue;
+    if (r > 0) n = read(status_pipe[0], &code, 1);
+    break;
+  }
   close(status_pipe[0]);
   if (!mapped) {
     return false;  // mapping failure already logged by WriteProcFile/ChildPerror
@@ -1197,7 +1218,92 @@ struct InitControlStorage {
   }
 };
 
+vector<string> CheckpointStartupArgs(const string& serialized) {
+  vector<string> result;
+  for (const auto& arg : blaze_util::Split(serialized, '\0')) {
+    // These options describe the client connecting to the server, rather than
+    // the JVM being restored. Keep every JVM option, its position, and its
+    // multiplicity: two conflicting -Xmx or -D flags are order-sensitive.
+    bool client_only = false;
+    for (const string prefix : {"--option_sources=", "--connect_timeout_secs=",
+                                "--local_startup_timeout_secs=",
+                                "--client_debug=", "--preemptible="}) {
+      if (arg.compare(0, prefix.size(), prefix) == 0) client_only = true;
+    }
+    if (!client_only) result.push_back(arg);
+  }
+  return result;
+}
+
 }  // namespace
+
+bool CriuCheckpointExists(const blaze_util::Path& output_base,
+                          const string& install_key,
+                          const vector<string>& server_args) {
+  const auto images = output_base.GetRelative(kCriuImagesSubdir);
+  if (!blaze_util::PathExists(images)) return false;
+  auto reject = [](const char* reason) {
+    BAZEL_LOG(USER) << "criu: ignoring checkpoint: " << reason;
+    return false;
+  };
+  string key, saved_args, requested_args;
+  if (!blaze_util::ReadFile(images.GetRelative(kInstallKeyFile), &key) ||
+      key != install_key) {
+    return reject("missing or different binary identity");
+  }
+  if (!blaze_util::ReadFile(images.GetRelative(kStartupArgsFile),
+                            &saved_args) ||
+      saved_args.empty()) {
+    return reject("missing checkpoint-time startup arguments");
+  }
+  blaze_util::JoinStrings(server_args, '\0', &requested_args);
+  if (CheckpointStartupArgs(saved_args) !=
+      CheckpointStartupArgs(requested_args)) {
+    return reject("checkpoint-time startup arguments differ");
+  }
+  int ns_pid;
+  if (!ReadPidFile(images.GetRelative(kNsPidFile), &ns_pid) || ns_pid <= 1 ||
+      !blaze_util::PathExists(images.GetRelative(kServerInfoName))) {
+    return reject("missing or invalid server identity");
+  }
+  return true;
+}
+
+bool criu_internal::PrepareRestore(const blaze_util::Path& output_base,
+                                   int* ns_pid) {
+  const auto images = output_base.GetRelative(kCriuImagesSubdir);
+  const auto server = output_base.GetRelative("server");
+  string args, info;
+  if (!ReadPidFile(images.GetRelative(kNsPidFile), ns_pid) || *ns_pid <= 1 ||
+      !blaze_util::ReadFile(images.GetRelative(kStartupArgsFile), &args) ||
+      args.empty() ||
+      !blaze_util::ReadFile(images.GetRelative(kServerInfoName), &info) ||
+      info.empty() || !blaze_util::MakeDirectories(server, 0700)) {
+    BAZEL_LOG(USER) << "criu: could not read checkpoint server files";
+    return false;
+  }
+  // Never let the resumed JVM use a previous server's host identity. SIGWINCH
+  // will publish the fresh identity after the new namespace is populated.
+  for (const char* name : {"server.host_pid", "server.starttime"}) {
+    if (unlink(server.GetRelative(name).AsNativePath().c_str()) != 0 &&
+        errno != ENOENT) {
+      BAZEL_LOG(USER) << "criu: could not clear stale host identity";
+      return false;
+    }
+  }
+  // A restored PID watcher can fire immediately. Its file must contain the
+  // original namespace-local PID, with no newline, before CRIU resumes it.
+  // Always recover cookies and cmdline from the immutable snapshot, even if
+  // a different server has left live files behind since checkpointing.
+  if (!WriteIdentityFile(server.GetRelative(kServerPidFile),
+                         std::to_string(*ns_pid)) ||
+      !WriteIdentityFile(server.GetRelative(kServerInfoName), info) ||
+      !WriteIdentityFile(server.GetRelative("cmdline"), args)) {
+    BAZEL_LOG(USER) << "criu: could not recreate live server files";
+    return false;
+  }
+  return true;
+}
 
 bool criu_internal::HandleCheckpointRequest(const InitControl& paths,
                                             int connection) {
@@ -1460,6 +1566,65 @@ int ExecuteDaemonInNamespace(const blaze_util::Path &exe,
   return host_pid;
 }
 
+bool CriuRestore(const blaze_util::Path& output_base) {
+  const auto images = output_base.GetRelative(kCriuImagesSubdir);
+  const auto server = output_base.GetRelative("server");
+  auto failed = [&]() {
+    KillNamespacedServer(server);
+    // Namespace creation can fail before an init record is written. Do not
+    // leave its prepared local PID or stale connection metadata for a later
+    // client to mistake for a live server.
+    for (const char* name : {kServerPidFile, kServerInfoName, "cmdline",
+                             "server.host_pid", "server.starttime"}) {
+      blaze_util::UnlinkPath(server.GetRelative(name));
+    }
+    return false;
+  };
+  int ns_pid;
+  if (!criu_internal::PrepareRestore(output_base, &ns_pid)) return failed();
+
+  BAZEL_LOG(USER) << "criu: restoring server from " << images.AsPrintablePath();
+  vector<string> args = {CriuBinary(),
+                         "restore",
+                         "--restore-detached",
+                         "--images-dir",
+                         images.AsNativePath(),
+                         "--skip-file-rwx-check",
+                         "--ghost-limit",
+                         "1000000000",
+                         "--tcp-close",
+                         "--shell-job",
+                         "--file-locks",
+                         "--unprivileged",
+                         "--log-file",
+                         images.GetRelative("restore.log").AsNativePath(),
+                         "-v4"};
+  vector<string> env;
+  for (char** e = environ; e != nullptr && *e != nullptr; ++e) {
+    env.push_back(*e);
+  }
+  InitControlStorage ctl(output_base, /*serve_control=*/true);
+  int code = -1, init_pid = 0;
+  if (!RunInNamespace(args, env, server, &ctl.ctl, &code, &init_pid,
+                      /*timeout_secs=*/300) ||
+      code != 0) {
+    BAZEL_LOG(USER) << "criu: restore failed (exit " << code << "); see "
+                    << images.GetRelative("restore.log").AsPrintablePath();
+    return failed();
+  }
+  const string ns_namespace = PidNamespaceOf(init_pid);
+  int host_pid = ns_namespace.empty()
+                     ? -1
+                     : MakeReachable(ns_pid, ns_namespace, server,
+                                     /*timeout_secs=*/30);
+  if (host_pid < 0) {
+    BAZEL_LOG(USER) << "criu: restored server identity could not be reconciled";
+    return failed();
+  }
+  BAZEL_LOG(USER) << "criu: restored server at host PID " << host_pid;
+  return true;
+}
+
 int CriuCheckpoint(const blaze_util::Path& output_base,
                    const string& install_key, bool stop,
                    const std::function<bool()>& cancelled) {
@@ -1468,6 +1633,16 @@ int CriuCheckpoint(const blaze_util::Path& output_base,
   const auto key_file = images.GetRelative(kInstallKeyFile);
   // A failed overwrite must never retain a previous checkpoint's success key.
   blaze_util::UnlinkPath(key_file);
+  // Capture the running server's actual startup arguments, not those of this
+  // checkpoint client (which may have different --host_jvm_args). Capture now:
+  // the stop-after-dump path may remove the live server directory.
+  string startup_args;
+  if (!blaze_util::ReadFile(output_base.GetRelative("server/cmdline"),
+                            &startup_args) ||
+      startup_args.empty()) {
+    BAZEL_LOG(USER) << "criu: could not read running server startup arguments";
+    return blaze_exit_code::LOCAL_ENVIRONMENTAL_ERROR;
+  }
   string token;
   if (!blaze_util::ReadFile(
           output_base.GetRelative("server/checkpoint.request"), &token) ||
@@ -1540,8 +1715,10 @@ int CriuCheckpoint(const blaze_util::Path& output_base,
                     << images.GetRelative("dump.log").AsPrintablePath() << ")";
     return blaze_exit_code::LOCAL_ENVIRONMENTAL_ERROR;
   }
-  if (!WriteIdentityFile(key_file, install_key)) {
-    BAZEL_LOG(USER) << "criu: could not record checkpoint install key";
+  if (!WriteIdentityFile(images.GetRelative(kStartupArgsFile), startup_args) ||
+      !WriteIdentityFile(key_file, install_key)) {
+    BAZEL_LOG(USER)
+        << "criu: could not record checkpoint compatibility metadata";
     return blaze_exit_code::LOCAL_ENVIRONMENTAL_ERROR;
   }
   if (stop) KillNamespacedServer(output_base.GetRelative("server"));
