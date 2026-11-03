@@ -12,6 +12,16 @@ filegroup(
 )
 
 cc_test(
+    name = "blaze_criu_test",
+    size = "small",
+    srcs = ["blaze_criu_test.cc"],
+    deps = [
+        "//src/main/cpp:blaze_util",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
+cc_test(
     name = "blaze_util_test",
     srcs = select({
         "//src/conditions:windows": [
