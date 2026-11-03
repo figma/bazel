@@ -15,6 +15,10 @@
 #ifndef BAZEL_SRC_MAIN_CPP_BLAZE_CRIU_INTERNAL_H_
 #define BAZEL_SRC_MAIN_CPP_BLAZE_CRIU_INTERNAL_H_
 
+#include <chrono>
+#include <string>
+#include <vector>
+
 #include "src/main/cpp/util/path.h"
 
 namespace blaze {
@@ -37,7 +41,23 @@ struct InitControl {
   // `checkpoint` command (see RunInit and CheckpointCommand.java).
   const char* sentinel_file;
   const char* request_file;
+  // Detected in the launcher before forking; init must remain fork-safe.
+  bool compress;
 };
+
+struct CriuFeatures {
+  bool compress = false;
+  bool decompress_threads = false;
+};
+
+// Capability-free, bounded --help probe. Failure leaves compression disabled.
+CriuFeatures ProbeCriuFeatures(
+    const std::string& binary,
+    std::chrono::milliseconds timeout = std::chrono::seconds(2));
+
+std::vector<std::string> RestoreArgs(const std::string& binary,
+                                     const blaze_util::Path& images,
+                                     CriuFeatures features);
 
 // Serve one connected Unix control socket from init. Returns whether a
 // successful dump requested teardown. Uses only syscalls and stack storage.

@@ -25,6 +25,7 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <cerrno>
 #include <cstdlib>
 #include <cstring>
@@ -280,7 +281,7 @@ class CheckpointControlTest : public NamespaceTeardownTest {
     blaze_util::RemoveRecursively(output_base_);
   }
 
-  void StartControl() {
+  void StartControl(bool compress = false) {
     int listener = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
     ASSERT_GE(listener, 0);
     struct sockaddr_un addr = {};
@@ -306,9 +307,9 @@ class CheckpointControlTest : public NamespaceTeardownTest {
     std::string images = images_.AsNativePath();
     std::string binary = binary_.AsNativePath();
     criu_internal::InitControl ctl = {
-        socket_path.c_str(), binary.c_str(),   images.c_str(),
-        ns_pid.c_str(),      pid_file.c_str(), info.c_str(),
-        snapshot.c_str(),    sentinel.c_str(), request.c_str()};
+        socket_path.c_str(), binary.c_str(), images.c_str(),   ns_pid.c_str(),
+        pid_file.c_str(),    info.c_str(),   snapshot.c_str(), sentinel.c_str(),
+        request.c_str(),     compress};
     control_ = fork();
     ASSERT_GE(control_, 0);
     if (control_ == 0) {
@@ -355,6 +356,7 @@ TEST_F(CheckpointControlTest, LeaveRunningRecordsMetadataAndDumpFlags) {
        {"--leave-running", "--tcp-close", "--file-locks", "--unprivileged"}) {
     EXPECT_NE(args.find(flag), std::string::npos);
   }
+  EXPECT_EQ(args.find("--compress\n"), std::string::npos);
   ASSERT_TRUE(blaze_util::ReadFile(images_.GetRelative("ns-pid"), &pid));
   EXPECT_EQ(pid, "3");
   ASSERT_TRUE(blaze_util::ReadFile(images_.GetRelative("install-key"), &key));
@@ -366,6 +368,77 @@ TEST_F(CheckpointControlTest, LeaveRunningRecordsMetadataAndDumpFlags) {
       blaze_util::ReadFile(images_.GetRelative("startup-args"), &startup_args));
   EXPECT_EQ(startup_args, serialized_args_);
   EXPECT_TRUE(CriuCheckpointExists(output_base_, "install-key", args_));
+}
+
+TEST_F(CheckpointControlTest, CompressesDumpWhenSupported) {
+  StartControl(/*compress=*/true);
+  EXPECT_EQ(CriuCheckpoint(output_base_, "key", false, [] { return false; }),
+            0);
+  ExpectControlExit(false);
+  std::string args;
+  ASSERT_TRUE(
+      blaze_util::ReadFile(output_base_.GetRelative("dump-args"), &args));
+  EXPECT_NE(args.find("--compress\n"), std::string::npos);
+}
+
+TEST_F(CheckpointControlTest, ProbesHelpWithoutShellAndScalesRestoreThreads) {
+  // Literal quotes and spaces in the executable path must never reach a shell.
+  const auto quoted = output_base_.GetRelative("criu ' quoted");
+  ASSERT_TRUE(blaze_util::WriteFile(
+      "#!/bin/sh\n[ \"$1\" = --help ] || exit 1\n"
+      "printf '  --compress\\n  --decompress-threads N\\n' >&2\n",
+      quoted, 0700));
+  auto features = criu_internal::ProbeCriuFeatures(quoted.AsNativePath());
+  EXPECT_TRUE(features.compress);
+  EXPECT_TRUE(features.decompress_threads);
+  const auto args =
+      criu_internal::RestoreArgs(quoted.AsNativePath(), images_, features);
+  const auto flag = std::find(args.begin(), args.end(), "--decompress-threads");
+  ASSERT_NE(flag, args.end());
+  ASSERT_NE(flag + 1, args.end());
+  EXPECT_EQ(*(flag + 1), "0");
+}
+
+TEST_F(CheckpointControlTest, OlderOrFailedCriuDoesNotReceiveUnsupportedFlags) {
+  for (const char* body :
+       {"printf '  --compression\\n  --decompress-threads-extra\\n'\n",
+        "printf '  --compress\\n  --decompress-threads N\\n'\nexit 1\n"}) {
+    ASSERT_TRUE(blaze_util::WriteFile(std::string("#!/bin/sh\n") + body,
+                                      binary_, 0700));
+    auto features = criu_internal::ProbeCriuFeatures(binary_.AsNativePath());
+    EXPECT_FALSE(features.compress);
+    EXPECT_FALSE(features.decompress_threads);
+    const auto args =
+        criu_internal::RestoreArgs(binary_.AsNativePath(), images_, features);
+    EXPECT_EQ(std::find(args.begin(), args.end(), "--decompress-threads"),
+              args.end());
+  }
+}
+
+TEST_F(CheckpointControlTest, HangingProbeIsBoundedAndReaped) {
+  auto pid_file = output_base_.GetRelative("probe-pid");
+  ASSERT_TRUE(blaze_util::WriteFile("#!/bin/sh\necho $$ > '" +
+                                        pid_file.AsNativePath() +
+                                        "'\nexec sleep 600\n",
+                                    binary_, 0700));
+  const auto start = std::chrono::steady_clock::now();
+  auto features = criu_internal::ProbeCriuFeatures(
+      binary_.AsNativePath(), std::chrono::milliseconds(100));
+  EXPECT_FALSE(features.compress);
+  EXPECT_FALSE(features.decompress_threads);
+  EXPECT_LT(std::chrono::steady_clock::now() - start, std::chrono::seconds(2));
+  std::string pid;
+  ASSERT_TRUE(blaze_util::ReadFile(pid_file, &pid));
+  EXPECT_EQ(kill(std::stoi(pid), 0), -1);
+  EXPECT_EQ(errno, ESRCH);
+}
+
+TEST_F(CheckpointControlTest, OversizedHelpDoesNotEnableCompression) {
+  ASSERT_TRUE(blaze_util::WriteFile("#!/bin/sh\nexec yes -- --compress\n",
+                                    binary_, 0700));
+  auto features = criu_internal::ProbeCriuFeatures(binary_.AsNativePath());
+  EXPECT_FALSE(features.compress);
+  EXPECT_FALSE(features.decompress_threads);
 }
 
 TEST_F(CheckpointControlTest, CompatibilityUsesImmutableOrderedStartupArgs) {

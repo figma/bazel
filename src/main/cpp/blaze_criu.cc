@@ -108,10 +108,12 @@ int ExecuteDaemonInNamespace(const blaze_util::Path &, const vector<string> &,
 #include <sys/wait.h>
 #include <unistd.h>
 
+#include <cctype>
 #include <cerrno>
 #include <chrono>
 #include <cstdio>
 #include <cstring>
+#include <ctime>
 #include <thread>
 
 #ifndef environ
@@ -459,6 +461,7 @@ bool RunCriuDump(const InitControl* ctl, bool leave_running, int conn) {
   // of the dumped tree, so this is self-consistent.
   argv[i++] = "--file-locks";
   argv[i++] = "--unprivileged";
+  if (ctl->compress) argv[i++] = "--compress";
   argv[i++] = "--log-file";
   argv[i++] = logfile;
   argv[i++] = "-v4";
@@ -1152,6 +1155,19 @@ bool ReadPidFile(const blaze_util::Path &path, int *pid) {
          blaze_util::safe_strto32(Stripped(bufstr), pid);
 }
 
+// ns-pid is written only after a successful dump and survives every restore.
+string CheckpointCreated(const blaze_util::Path& images) {
+  struct stat st;
+  struct tm utc;
+  char formatted[32];
+  if (stat(images.GetRelative(kNsPidFile).AsNativePath().c_str(), &st) != 0 ||
+      gmtime_r(&st.st_mtime, &utc) == nullptr ||
+      strftime(formatted, sizeof(formatted), "%Y-%m-%dT%H:%M:%SZ", &utc) == 0) {
+    return "";
+  }
+  return string(" (checkpoint created ") + formatted + ")";
+}
+
 string CriuBinary() {
   string criu = GetEnv("BAZEL_CRIU_BINARY");
   return criu.empty() ? "criu" : criu;
@@ -1180,6 +1196,13 @@ string ResolveCriuBinary() {
                : "";
   }
   return Which(criu);
+}
+
+criu_internal::CriuFeatures GetCriuFeatures() {
+  // A launcher uses one CRIU executable. Probe before forking, never in init.
+  static const auto features =
+      criu_internal::ProbeCriuFeatures(ResolveCriuBinary());
+  return features;
 }
 
 struct InitControlStorage {
@@ -1215,6 +1238,7 @@ struct InitControlStorage {
     ctl.server_info_file = server_info_file.c_str();
     ctl.server_info_snapshot = server_info_snapshot.c_str();
     ctl.sentinel_file = sentinel_file.c_str();
+    ctl.compress = GetCriuFeatures().compress;
   }
 };
 
@@ -1236,6 +1260,102 @@ vector<string> CheckpointStartupArgs(const string& serialized) {
 }
 
 }  // namespace
+
+criu_internal::CriuFeatures criu_internal::ProbeCriuFeatures(
+    const string& binary, std::chrono::milliseconds timeout) {
+  if (binary.empty()) return {};
+  int output[2];
+  if (pipe2(output, O_CLOEXEC) != 0) return {};
+  if (fcntl(output[0], F_SETFL, O_NONBLOCK) != 0) {
+    close(output[0]);
+    close(output[1]);
+    return {};
+  }
+  const char* argv[] = {binary.c_str(), "--help", nullptr};
+  pid_t child = fork();
+  if (child == 0) {
+    setsid();
+    dup2(output[1], STDOUT_FILENO);
+    dup2(output[1], STDERR_FILENO);
+    CloseInheritedFds(-1);
+    // No shell: an executable path may contain spaces or shell metacharacters.
+    execv(argv[0], const_cast<char* const*>(argv));
+    _exit(127);
+  }
+  close(output[1]);
+  if (child < 0) {
+    close(output[0]);
+    return {};
+  }
+  string help;
+  bool eof = false, exited = false;
+  int status = 0;
+  const auto deadline = std::chrono::steady_clock::now() + timeout;
+  while (std::chrono::steady_clock::now() < deadline &&
+         help.size() < 1024 * 1024) {
+    char buf[4096];
+    ssize_t n = read(output[0], buf, sizeof(buf));
+    if (n > 0) help.append(buf, n);
+    if (n == 0) eof = true;
+    // Keep the child unreaped until EOF so its PID/process-group identity
+    // cannot be reused if timeout cleanup must kill helpers holding the pipe.
+    if (eof) exited = waitpid(child, &status, WNOHANG) == child;
+    if (n < 0 && errno != EINTR && errno != EAGAIN) break;
+    if (eof && exited) break;
+    struct pollfd ready = {eof ? -1 : output[0], POLLIN, 0};
+    if (n <= 0) poll(&ready, 1, 10);
+  }
+  close(output[0]);
+  if (!eof || !exited) {
+    kill(-child, SIGKILL);
+    if (!exited) {
+      kill(child, SIGKILL);
+      while (waitpid(child, nullptr, 0) < 0 && errno == EINTR) {
+      }
+    }
+    return {};
+  }
+  if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) return {};
+  auto has_option = [&](const string& option) {
+    for (size_t pos = help.find(option); pos != string::npos;
+         pos = help.find(option, pos + 1)) {
+      size_t end = pos + option.size();
+      if ((pos == 0 ||
+           std::isspace(static_cast<unsigned char>(help[pos - 1]))) &&
+          (end == help.size() ||
+           std::isspace(static_cast<unsigned char>(help[end])) ||
+           help[end] == '=' || help[end] == ','))
+        return true;
+    }
+    return false;
+  };
+  return {has_option("--compress"), has_option("--decompress-threads")};
+}
+
+vector<string> criu_internal::RestoreArgs(const string& binary,
+                                          const blaze_util::Path& images,
+                                          CriuFeatures features) {
+  vector<string> args = {binary,
+                         "restore",
+                         "--restore-detached",
+                         "--images-dir",
+                         images.AsNativePath(),
+                         "--skip-file-rwx-check",
+                         "--ghost-limit",
+                         "1000000000",
+                         "--tcp-close",
+                         "--shell-job",
+                         "--file-locks",
+                         "--unprivileged",
+                         "--log-file",
+                         images.GetRelative("restore.log").AsNativePath(),
+                         "-v4"};
+  if (features.decompress_threads) {
+    args.push_back("--decompress-threads");
+    args.push_back("0");
+  }
+  return args;
+}
 
 bool CriuCheckpointExists(const blaze_util::Path& output_base,
                           const string& install_key,
@@ -1396,7 +1516,9 @@ bool CriuPreflight(std::string *error) {
                   << (userns_clone.empty() ? "(absent)" : userns_clone)
                   << " max_user_namespaces="
                   << (max_userns.empty() ? "(absent)" : max_userns)
-                  << " criu=" << (criu_path.empty() ? "(not found)" : criu_path);
+                  << " criu=" << (criu_path.empty() ? "(not found)" : criu_path)
+                  << " lz4_compression="
+                  << (GetCriuFeatures().compress ? "yes" : "no");
 
   vector<string> problems;
   // Pinning init identity is necessary to avoid killing a recycled PID during
@@ -1583,28 +1705,17 @@ bool CriuRestore(const blaze_util::Path& output_base) {
   int ns_pid;
   if (!criu_internal::PrepareRestore(output_base, &ns_pid)) return failed();
 
-  BAZEL_LOG(USER) << "criu: restoring server from " << images.AsPrintablePath();
-  vector<string> args = {CriuBinary(),
-                         "restore",
-                         "--restore-detached",
-                         "--images-dir",
-                         images.AsNativePath(),
-                         "--skip-file-rwx-check",
-                         "--ghost-limit",
-                         "1000000000",
-                         "--tcp-close",
-                         "--shell-job",
-                         "--file-locks",
-                         "--unprivileged",
-                         "--log-file",
-                         images.GetRelative("restore.log").AsNativePath(),
-                         "-v4"};
+  BAZEL_LOG(USER) << "criu: restoring server from " << images.AsPrintablePath()
+                  << CheckpointCreated(images);
+  auto args =
+      criu_internal::RestoreArgs(CriuBinary(), images, GetCriuFeatures());
   vector<string> env;
   for (char** e = environ; e != nullptr && *e != nullptr; ++e) {
     env.push_back(*e);
   }
   InitControlStorage ctl(output_base, /*serve_control=*/true);
   int code = -1, init_pid = 0;
+  const auto restore_start = GetMillisecondsMonotonic();
   if (!RunInNamespace(args, env, server, &ctl.ctl, &code, &init_pid,
                       /*timeout_secs=*/300) ||
       code != 0) {
@@ -1612,6 +1723,8 @@ bool CriuRestore(const blaze_util::Path& output_base) {
                     << images.GetRelative("restore.log").AsPrintablePath();
     return failed();
   }
+  BAZEL_LOG(USER) << "criu: restore took "
+                  << GetMillisecondsMonotonic() - restore_start << "ms";
   const string ns_namespace = PidNamespaceOf(init_pid);
   int host_pid = ns_namespace.empty()
                      ? -1
@@ -1674,6 +1787,7 @@ int CriuCheckpoint(const blaze_util::Path& output_base,
   }
   const string command =
       (stop ? "CHECKPOINT_STOP " : "CHECKPOINT ") + token + "\n";
+  const auto dump_start = GetMillisecondsMonotonic();
   if (send(fd, command.data(), command.size(), MSG_NOSIGNAL) !=
       static_cast<ssize_t>(command.size())) {
     close(fd);
@@ -1707,6 +1821,8 @@ int CriuCheckpoint(const blaze_util::Path& output_base,
     if (response.find('\n') != string::npos) break;
   }
   close(fd);
+  BAZEL_LOG(USER) << "criu: dump took "
+                  << GetMillisecondsMonotonic() - dump_start << "ms";
   if (cancelled()) return blaze_exit_code::INTERRUPTED;
   if (aborting) return blaze_exit_code::LOCAL_ENVIRONMENTAL_ERROR;
   if (response.compare(0, 3, "OK ") != 0) {
@@ -1722,7 +1838,8 @@ int CriuCheckpoint(const blaze_util::Path& output_base,
     return blaze_exit_code::LOCAL_ENVIRONMENTAL_ERROR;
   }
   if (stop) KillNamespacedServer(output_base.GetRelative("server"));
-  BAZEL_LOG(USER) << "criu: " << Stripped(response.substr(3));
+  BAZEL_LOG(USER) << "criu: " << Stripped(response.substr(3))
+                  << CheckpointCreated(images);
   return blaze_exit_code::SUCCESS;
 }
 
