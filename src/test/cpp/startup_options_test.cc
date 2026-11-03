@@ -82,6 +82,21 @@ class StartupOptionsTest : public ::testing::Test {
   std::string old_test_tmpdir_;
 };
 
+#ifdef __linux__
+TEST_F(StartupOptionsTest, CriuFlagCanBeEnabledAndDisabled) {
+  EXPECT_FALSE(startup_options_->criu);
+  std::string error;
+  EXPECT_EQ(blaze_exit_code::SUCCESS,
+            startup_options_->ProcessArgs({RcStartupFlag("", "--criu")}, &error))
+      << error;
+  EXPECT_TRUE(startup_options_->criu);
+  EXPECT_EQ(blaze_exit_code::SUCCESS,
+            startup_options_->ProcessArgs({RcStartupFlag("", "--nocriu")}, &error))
+      << error;
+  EXPECT_FALSE(startup_options_->criu);
+}
+#endif
+
 TEST_F(StartupOptionsTest, ProductName) {
   ASSERT_EQ("Bazel", startup_options_->product_name);
 }

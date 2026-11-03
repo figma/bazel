@@ -39,6 +39,21 @@ sh_library(
 )
 
 sh_test(
+    name = "criu_test",
+    size = "medium",
+    srcs = ["criu_test.sh"],
+    data = [
+        ":test-deps",
+        "@bazel_tools//tools/bash/runfiles",
+    ],
+    tags = [
+        "no-sandbox",
+        "no_macos",
+        "no_windows",
+    ],
+)
+
+sh_test(
     name = "progress_reporting_test",
     size = "large",
     srcs = ["progress_reporting_test.sh"],

@@ -15,8 +15,11 @@ package com.google.devtools.build.lib.bazel;
 
 import com.google.common.collect.ImmutableList;
 import com.google.devtools.build.lib.analysis.BlazeDirectories;
+import com.google.devtools.build.lib.events.Event;
 import com.google.devtools.build.lib.runtime.BlazeModule;
 import com.google.devtools.build.lib.runtime.BlazeRuntime;
+import com.google.devtools.build.lib.runtime.BlazeServerStartupOptions;
+import com.google.devtools.build.lib.runtime.CommandEnvironment;
 import com.google.devtools.build.lib.runtime.WorkspaceBuilder;
 import com.google.devtools.build.lib.skyframe.DiffAwareness;
 import com.google.devtools.build.lib.skyframe.LocalDiffAwareness;
@@ -29,8 +32,21 @@ public class BazelDiffAwarenessModule extends BlazeModule {
   @Override
   public void workspaceInit(
       BlazeRuntime runtime, BlazeDirectories directories, WorkspaceBuilder builder) {
+    // Watcher state does not survive a CRIU restore.
+    if (runtime.getStartupOptionsProvider().getOptions(BlazeServerStartupOptions.class).criu) {
+      return;
+    }
     // Order here is important - LocalDiffAwareness creation always succeeds, so it must be last.
     builder.addDiffAwarenessFactory(new LocalDiffAwareness.Factory(ImmutableList.<String>of()));
+  }
+
+  @Override
+  public void beforeCommand(CommandEnvironment env) {
+    if (env.getRuntime().getStartupOptionsProvider().getOptions(BlazeServerStartupOptions.class).criu
+        && env.getOptions().containsExplicitOption("watchfs")
+        && env.getOptions().getOptions(LocalDiffAwareness.Options.class).watchFS) {
+      env.getReporter().handle(Event.warn("--watchfs is ignored in CRIU mode"));
+    }
   }
 
   @Override

@@ -40,6 +40,14 @@ import java.util.Map;
  * <p>The same relationship holds between {@link HostJvmStartupOptions} and the launcher.
  */
 public class BlazeServerStartupOptions extends OptionsBase {
+  @Option(
+      name = "criu",
+      defaultValue = "false",
+      documentationCategory = OptionDocumentationCategory.BAZEL_CLIENT_OPTIONS,
+      effectTags = {OptionEffectTag.LOSES_INCREMENTAL_STATE},
+      help = "Start a checkpointable server in Linux user, PID, and mount namespaces.")
+  public boolean criu;
+
   /**
    * Converter for the <code>option_sources</code> option. Takes a string in the form of
    * "option_name1:source1:option_name2:source2:.." and converts it into an option name to source

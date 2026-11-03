@@ -61,6 +61,7 @@
 #endif
 
 #include "src/main/cpp/archive_utils.h"
+#include "src/main/cpp/blaze_criu.h"
 #include "src/main/cpp/blaze_util.h"
 #include "src/main/cpp/blaze_util_platform.h"
 #include "src/main/cpp/option_processor.h"
@@ -477,6 +478,10 @@ static vector<string> GetServerExeArgs(const blaze_util::Path &jvm_path,
 
   startup_options.AddJVMArgumentSuffix(real_install_dir, server_jar_path,
                                        &result);
+
+  if (CriuModeActive()) {
+    result.push_back("--criu");
+  }
 
   // JVM arguments are complete. Now pass in Blaze startup options.
   // Note that we always use the --flag=ARG form (instead of the --flag ARG
@@ -991,11 +996,25 @@ static void StartServerAndConnect(
                   << " server (" << build_label << ")"
                   << " and connecting to it...";
   BlazeServerStartup *server_startup;
-  const int server_pid = ExecuteDaemon(
-      server_exe, server_exe_args, PrepareEnvironmentForJvm(),
-      server->ProcessInfo().jvm_log_file_,
-      server->ProcessInfo().jvm_log_file_append_, startup_options.install_base,
-      server_dir, startup_options, &server_startup);
+  int server_pid;
+  if (CriuModeActive()) {
+    // Start the server inside a fresh PID namespace under a persistent init, so
+    // its process tree has reproducible low PIDs that rootless CRIU can later
+    // checkpoint and restore. Returns the server's *host* pid (the function has
+    // already rewritten the on-disk identity so host clients can attach).
+    server_pid = ExecuteDaemonInNamespace(
+        server_exe, server_exe_args, PrepareEnvironmentForJvm(),
+        server->ProcessInfo().jvm_log_file_,
+        server->ProcessInfo().jvm_log_file_append_,
+        startup_options.install_base, server_dir, &server_startup);
+  } else {
+    server_pid = ExecuteDaemon(
+        server_exe, server_exe_args, PrepareEnvironmentForJvm(),
+        server->ProcessInfo().jvm_log_file_,
+        server->ProcessInfo().jvm_log_file_append_,
+        startup_options.install_base, server_dir, startup_options,
+        &server_startup);
+  }
 
   ConnectOrDie(option_processor, startup_options, server_pid, server_startup,
                server);
@@ -1294,6 +1313,64 @@ static string GetCanonicalCwd() {
         << "') failed: " << GetLastErrorString();
   }
   return result;
+}
+
+// Returns true if host_jvm_args already carries a -D<prefix...> property, so we
+// do not override a value the user set explicitly.
+static bool HasHostJvmProperty(const vector<string> &host_jvm_args,
+                               const string &property_prefix) {
+  for (const string &arg : host_jvm_args) {
+    if (arg.compare(0, property_prefix.size(), property_prefix) == 0) {
+      return true;
+    }
+  }
+  return false;
+}
+
+// When CRIU mode is active, adjust startup options and environment so the
+// server we (re)start is checkpointable and never self-terminates:
+//   - --max_idle_secs=0: a warm, snapshot-worthy server must not idle out.
+//   - -Duser.home: the server runs as uid 0 inside the user namespace, so the
+//     JVM would otherwise resolve "~" to /root via getpwuid; pin it to the real
+//     home so bazel expands "~" (e.g. in a disk cache path) correctly.
+// Every native library the server maps is already packaged loose in the install
+// base and loaded from java.library.path (bazel's own libunix_jni via JniLoader,
+// and the third-party libs netty/zstd/async-profiler), so no native lib is
+// extracted to a /tmp file that rootless CRIU could not checkpoint; nothing
+// extra is needed here for that.
+// No-op unless CRIU mode is active. These mutations happen before RunLauncher,
+// so they flow into both the server JVM command line and the cmdline file used
+// to decide whether a running server's startup options still match.
+static void MaybeConfigureCriuMode(StartupOptions *startup_options) {
+  if (!CriuModeActive()) {
+    return;
+  }
+
+  if (startup_options->batch) {
+    BAZEL_DIE(blaze_exit_code::BAD_ARGV)
+        << "--criu requires a persistent server and cannot be used with --batch.";
+  }
+  string error;
+  if (!CriuPreflight(&error)) {
+    BAZEL_DIE(blaze_exit_code::LOCAL_ENVIRONMENTAL_ERROR) << error;
+  }
+  startup_options->max_idle_secs = 0;
+  startup_options->shutdown_on_low_sys_mem = false;
+  // Keep perf counters in heap memory instead of /tmp/hsperfdata_<user>/<pid>,
+  // which the JVM removes on exit and CRIU cannot reopen after a reboot.
+  if (!HasHostJvmProperty(startup_options->host_jvm_args,
+                          "-XX:+PerfDisableSharedMem") &&
+      !HasHostJvmProperty(startup_options->host_jvm_args,
+                          "-XX:-PerfDisableSharedMem")) {
+    startup_options->host_jvm_args.push_back("-XX:+PerfDisableSharedMem");
+  }
+
+  if (!HasHostJvmProperty(startup_options->host_jvm_args, "-Duser.home=")) {
+    const string home = GetEnv("HOME");
+    if (!home.empty()) {
+      startup_options->host_jvm_args.push_back("-Duser.home=" + home);
+    }
+  }
 }
 
 static void PrepareDirectories(StartupOptions *startup_options) {
@@ -1674,6 +1751,9 @@ int Main(int argc, const char *const *argv, WorkspaceLayout *workspace_layout,
   ParseOptionsOrDie(cwd, workspace, *option_processor, argc, argv);
   StartupOptions *startup_options = option_processor->GetParsedStartupOptions();
   startup_options->MaybeLogStartupOptionWarnings();
+#ifdef __linux__
+  SetCriuModeActive(startup_options->criu);
+#endif
 
   if (startup_options->client_debug) {
     SetDebugLog(blaze_util::LOGGINGDETAIL_DEBUG);
@@ -1715,6 +1795,8 @@ int Main(int argc, const char *const *argv, WorkspaceLayout *workspace_layout,
       install_md5, workspace, IsServerMode(option_processor->GetCommand()));
 
   PrepareDirectories(startup_options);
+
+  MaybeConfigureCriuMode(startup_options);
 
   RunLauncher(self_path, archive_contents, install_md5, *startup_options,
               *option_processor, *workspace_layout, workspace, build_label,

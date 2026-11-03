@@ -287,6 +287,9 @@ class StartupOptions {
   // If enabled, the Bazel server will be run with systemd-run, and the user
   // will own the cgroup.
   bool run_in_user_cgroup;
+
+  // Start a checkpointable server in Linux user, PID, and mount namespaces.
+  bool criu;
 #endif
 
   // Whether to create symbolic links on Windows for files. Requires
