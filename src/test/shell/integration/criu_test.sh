@@ -53,6 +53,23 @@ function test_criu_rejects_batch() {
   expect_log "cannot be used with --batch"
 }
 
+function test_checkpoint_requires_criu() {
+  bazel checkpoint >"${TEST_log}" 2>&1 && fail "Expected CRIU mode rejection"
+  expect_log "requires --criu"
+}
+
+function test_checkpoint_rejects_unknown_flags_before_preflight() {
+  BAZEL_CRIU_BINARY="${TEST_TMPDIR}/missing-criu" \
+      bazel --criu checkpoint --unknown_checkpoint_flag >"${TEST_log}" 2>&1 \
+      && fail "Expected checkpoint argument rejection"
+  expect_log "Unknown argument to 'checkpoint'"
+}
+
+function test_checkpoint_rejects_batch() {
+  bazel --criu --batch checkpoint >"${TEST_log}" 2>&1 && fail "Expected batch rejection"
+  expect_log "requires --criu and a persistent server"
+}
+
 function require_criu_namespaces() {
   if ! command -v "${BAZEL_CRIU_BINARY:-criu}" >/dev/null 2>&1; then
     echo "Skipping namespaced lifecycle: CRIU executable is unavailable"
@@ -194,9 +211,33 @@ EOF
   assert_process_gone "${init_pid}"
 }
 
+function test_criu_checkpoint_leaves_running_or_stops() {
+  require_criu_namespaces || return 0
+  local ob="${TEST_TMPDIR}/criu-checkpoint"
+  local server_pid init_pid
+  bazel --criu --output_base="${ob}" info server_pid >"${TEST_log}" 2>&1 \
+      || fail "Namespaced startup failed"
+  server_pid=$(cat "${ob}/server/server.host_pid")
+  init_pid=$(cat "${ob}/server/server.init_host_pid")
+  bazel --criu --output_base="${ob}" checkpoint --leave_running >"${TEST_log}" 2>&1 \
+      || fail "Leave-running checkpoint failed"
+  [[ -s "${ob}/criu/inventory.img" ]] || fail "No CRIU image inventory"
+  [[ -s "${ob}/criu/ns-pid" && -s "${ob}/criu/install-key" ]] || fail "No checkpoint identity"
+  [[ ! -e "${ob}/server/checkpoint.sentinel" ]] || fail "Server remained parked"
+  bazel --criu --output_base="${ob}" info server_pid >"${TEST_log}" 2>&1 \
+      || fail "Server did not accept commands after checkpoint"
+  expect_log "^${server_pid}$"
+  bazel --criu --output_base="${ob}" checkpoint >"${TEST_log}" 2>&1 \
+      || fail "Stop checkpoint failed"
+  assert_process_gone "${server_pid}"
+  assert_process_gone "${init_pid}"
+  [[ ! -e "${ob}/server/checkpoint.sentinel" ]] || fail "Stale sentinel"
+  [[ ! -e "${ob}/server/checkpoint.request" ]] || fail "Stale checkpoint request"
+}
+
 function tear_down() {
   local ob init_pid
-  for ob in "${TEST_TMPDIR}"/criu-{reuse,takeover,mode-switch,cancel}; do
+  for ob in "${TEST_TMPDIR}"/criu-{reuse,takeover,mode-switch,cancel,checkpoint}; do
     if [[ -f "${ob}/server/server.init_host_pid" ]]; then
       init_pid=$(cat "${ob}/server/server.init_host_pid")
       if [[ -f "/proc/${init_pid}/status" ]] && \

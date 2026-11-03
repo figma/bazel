@@ -150,3 +150,18 @@ cc_test(
 )
 
 test_suite(name = "all_tests")
+
+cc_test(
+    name = "blaze_criu_client_test",
+    size = "small",
+    srcs = ["blaze_criu_client_test.cc"],
+    deps = [
+        "//src/main/cpp:blaze_criu_client",
+        "//src/main/cpp:blaze_util",
+        "//src/main/cpp/util",
+        "//src/main/cpp/util:blaze_exit_code",
+        "//src/main/protobuf:command_server_cc_grpc",
+        "//src/main/protobuf:command_server_cc_proto",
+        "@com_google_googletest//:gtest_main",
+    ],
+)

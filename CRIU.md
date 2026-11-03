@@ -23,7 +23,7 @@ After restore, the launcher must recreate that local PID file before resuming
 the JVM, publish the new host PID and start time, and send `SIGWINCH`. The signal
 handler survives checkpointing and rewrites connection metadata from the JVM's
 in-memory address and cookies. The launcher waits for the advertised host PID to
-match before attaching. The checkpoint/restore commands themselves come later.
+match before attaching. The restore command comes later.
 
 The launcher also records `server/server.init_host_pid` and
 `server/server.init_starttime` before waiting for server startup. Shutdown,
@@ -74,11 +74,57 @@ its network namespace should match the client's. `server/cmdline` should contain
 `-XX:+PerfDisableSharedMem`. No `hsperfdata` file should be mapped.
 
 Use the same flags with `shutdown` to stop the server and its init. `--batch`
-cannot be combined with `--criu`. Checkpoint and restore commands are introduced
-separately.
+cannot be combined with `--criu`. Restore is introduced separately.
 
 The integration test `//src/test/shell/integration:criu_test` checks reuse,
 shutdown, forced cancellation, and takeover. It skips the namespaced lifecycle
 cases when CRIU or private proc mounts are unavailable. The C++ teardown tests
 use real user/PID namespaces without mounting proc, so they can still check init
 and child cleanup in containers that prohibit new proc mounts.
+
+## Take a coordinated checkpoint
+
+Start and warm a `--criu` server, then use the same output base:
+
+```sh
+"$BAZEL" --criu --output_base="$OB" checkpoint --leave_running
+"$BAZEL" --criu --output_base="$OB" info server_pid
+"$BAZEL" --criu --output_base="$OB" checkpoint
+```
+
+`checkpoint` stops the server and its init after a successful dump by default.
+`--leave_running` keeps the warm server available. The boolean forms
+`--leave_running=true`, `--leave_running=false`, and `--noleave_running` are also
+accepted. Checkpointing requires an existing namespaced server and never starts
+one implicitly. The running server must use the same packaged installation as
+the launcher. It cannot run in batch mode.
+
+The server-side command waits for active work to finish, takes the exclusive
+command lock, runs GC and interner shrinking, and flushes its logs and standard
+streams. It then writes `server/checkpoint.sentinel` and parks. A token-bearing
+`server/checkpoint.request` identifies this invocation, so a cancelled command
+that acquires the lock late cannot leave the server parked.
+
+The init listens on `$OB/bazel-criu.sock` (owner access only). The launcher asks
+it to run `criu dump` inside the user, PID, and mount namespaces, using
+`--unprivileged`, `--tcp-close`, `--file-locks`, and `--leave-running`. On the
+stop path init tears down the namespace after acknowledging success. Keep the
+output-base path short enough for Linux's 108-byte Unix socket address limit.
+
+Images and `dump.log` are written under `$OB/criu`, along with the
+namespace-local `ns-pid`, a connection-metadata snapshot, and the `install-key`
+identifying the packaged binary. The install key is published only after a
+successful dump; failed attempts invalidate a previous key. Restore will be
+added in the next group.
+
+Readiness is bounded to 120 seconds and the dump to five minutes. Interrupting
+the launcher cancels the dump; init terminates and reaps CRIU before replying.
+Success, failure, and cancellation all revoke the request and remove readiness
+to release the command lock. RPC cleanup cancels the transport and waits for a
+bounded interval; a broken stream cannot cause an unbounded thread join.
+
+`//src/test/java/com/google/devtools/build/lib/runtime:CheckpointCommandTest`
+exercises the real command lock and late cancellation. Native tests cover dump
+flags, control-socket cancellation, and stalled or severed RPCs with a stand-in
+dump executable. The integration suite also checks real checkpoint-and-keep and
+checkpoint-and-stop when CRIU and private proc mounts are available.

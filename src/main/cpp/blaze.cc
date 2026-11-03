@@ -28,6 +28,11 @@
 #include <assert.h>
 #include <fcntl.h>
 #include <grpc/grpc.h>
+#ifdef __linux__
+#include <signal.h>
+#include <unistd.h>
+#endif
+
 #include <grpcpp/channel.h>
 #include <grpcpp/client_context.h>
 #include <grpcpp/create_channel.h>
@@ -62,6 +67,7 @@
 
 #include "src/main/cpp/archive_utils.h"
 #include "src/main/cpp/blaze_criu.h"
+#include "src/main/cpp/blaze_criu_client.h"
 #include "src/main/cpp/blaze_util.h"
 #include "src/main/cpp/blaze_util_platform.h"
 #include "src/main/cpp/option_processor.h"
@@ -229,6 +235,9 @@ class BlazeServer final {
   // is in connected state.
   void KillRunningServer();
 
+  int Checkpoint(const string& install_key, bool stop,
+                 const std::function<bool()>& cancelled);
+
   // Cancel the currently running command. If there is no command currently
   // running, the result is unspecified. When called, this object must be in
   // connected state.
@@ -252,7 +261,7 @@ class BlazeServer final {
     TERMINAL_SIZE_CHANGED
   };
 
-  std::unique_ptr<CommandServer::Stub> client_;
+  std::shared_ptr<CommandServer::Stub> client_;
   std::string request_cookie_;
   std::string response_cookie_;
   std::string command_id_;
@@ -1693,6 +1702,17 @@ static void RunLauncher(const string& self_path,
   }
 }
 
+#ifdef __linux__
+static volatile sig_atomic_t checkpoint_signal = 0;
+static volatile sig_atomic_t checkpoint_preparing = 1;
+static void CheckpointSignal(int signal) {
+  checkpoint_signal = signal;
+  // No checkpoint lease/RPC exists yet. Exit promptly even if output-base lock
+  // acquisition or the initial Ping is blocked; the OS releases client locks.
+  if (checkpoint_preparing) _exit(blaze_exit_code::INTERRUPTED);
+}
+#endif
+
 int Main(int argc, const char *const *argv, WorkspaceLayout *workspace_layout,
          OptionProcessor *option_processor, StartupInterceptor *interceptor,
          CommandExtensionAdder *command_extension_adder,
@@ -1802,6 +1822,41 @@ int Main(int argc, const char *const *argv, WorkspaceLayout *workspace_layout,
 
   PrepareDirectories(startup_options);
 
+  if (option_processor->GetCommand() == "checkpoint") {
+    if (!CriuModeActive() || startup_options->batch) {
+      BAZEL_LOG(USER) << "The 'checkpoint' command requires --criu and a "
+                         "persistent server.";
+      return blaze_exit_code::BAD_ARGV;
+    }
+    bool stop = true;
+    for (const string& arg : option_processor->GetExplicitCommandArguments()) {
+      if (arg == "--leave_running" || arg == "--leave_running=true") {
+        stop = false;
+      } else if (arg == "--noleave_running" || arg == "--leave_running=false") {
+        stop = true;
+      } else {
+        BAZEL_LOG(USER) << "Unknown argument to 'checkpoint': " << arg
+                        << " (accepts --[no]leave_running).";
+        return blaze_exit_code::BAD_ARGV;
+      }
+    }
+    MaybeConfigureCriuMode(startup_options);
+#ifdef __linux__
+    checkpoint_signal = 0;
+    checkpoint_preparing = 1;
+    struct sigaction action = {}, old_int, old_term;
+    action.sa_handler = CheckpointSignal;
+    sigemptyset(&action.sa_mask);
+    sigaction(SIGINT, &action, &old_int);
+    sigaction(SIGTERM, &action, &old_term);
+    blaze_server = new BlazeServer(*startup_options, command_extension_adder);
+    int result = blaze_server->Checkpoint(
+        install_md5, stop, [] { return checkpoint_signal != 0; });
+    sigaction(SIGINT, &old_int, nullptr);
+    sigaction(SIGTERM, &old_term, nullptr);
+    return result;
+#endif
+  }
   MaybeConfigureCriuMode(startup_options);
 
   RunLauncher(self_path, archive_contents, install_md5, *startup_options,
@@ -1905,6 +1960,38 @@ bool BlazeServer::Connect() {
   this->client_ = std::move(client);
   process_info_.server_pid_ = server_pid;
   return true;
+}
+
+int BlazeServer::Checkpoint(const string& install_key, bool stop,
+                            const std::function<bool()>& cancelled) {
+  AcquireLocks();
+  int result;
+  blaze_util::Path running_install;
+  // Do not silently start or checkpoint a normal server in the same base.
+  if (!blaze_util::PathExists(
+          output_base_.GetRelative("server/server.init_host_pid")) ||
+      !Connect()) {
+    BAZEL_LOG(USER) << "criu: no --criu server is running; start one first";
+    result = blaze_exit_code::LOCAL_ENVIRONMENTAL_ERROR;
+  } else if (!blaze_util::ReadDirectorySymlink(
+                 output_base_.GetRelative("install"), &running_install) ||
+             !blaze_util::ArePathsEquivalent(running_install, install_base_)) {
+    BAZEL_LOG(USER) << "criu: server uses another installation; restart it "
+                       "before checkpointing";
+    result = blaze_exit_code::LOCAL_ENVIRONMENTAL_ERROR;
+  } else {
+#ifdef __linux__
+    checkpoint_preparing = 0;
+#endif
+    result = CoordinateCheckpoint(
+        client_, request_cookie_, response_cookie_, output_base_,
+        [&] {
+          return CriuCheckpoint(output_base_, install_key, stop, cancelled);
+        },
+        cancelled);
+  }
+  ReleaseLocks();
+  return result;
 }
 
 // Cancellation works as follows:

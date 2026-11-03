@@ -23,6 +23,7 @@ java_library(
             "commands/*.java",
         ],
         exclude = [
+            "CheckpointCommandTest.java",
             "commands/ConfigCommandTest.java",
             "commands/DumpCommandTest.java",
             "commands/RunCommandLineTest.java",
@@ -204,5 +205,28 @@ java_test(
     runtime_deps = [
         ":RuntimeTests_lib",
         "//src/test/java/com/google/devtools/build/lib:test_runner",
+    ],
+)
+
+java_test(
+    name = "CheckpointCommandTest",
+    size = "medium",
+    srcs = ["CheckpointCommandTest.java"],
+    deps = [
+        "//src/main/java/com/google/devtools/build/lib:runtime",
+        "//src/main/java/com/google/devtools/build/lib:runtime/blaze_command_result",
+        "//src/main/java/com/google/devtools/build/lib:runtime/command_dispatcher",
+        "//src/main/java/com/google/devtools/build/lib/analysis:blaze_directories",
+        "//src/main/java/com/google/devtools/build/lib/analysis:server_directories",
+        "//src/main/java/com/google/devtools/build/lib/runtime/commands",
+        "//src/main/java/com/google/devtools/build/lib/util:exit_code",
+        "//src/main/java/com/google/devtools/build/lib/util/io:out-err",
+        "//src/main/java/com/google/devtools/build/lib/vfs",
+        "//src/main/java/com/google/devtools/common/options",
+        "//src/main/protobuf:invocation_policy_java_proto",
+        "//src/test/java/com/google/devtools/build/lib/testutil",
+        "//third_party:guava",
+        "//third_party:junit4",
+        "//third_party:truth",
     ],
 )
