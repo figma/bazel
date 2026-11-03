@@ -315,6 +315,8 @@ java_library(
 # unzipping. zstd builds its .so from source into a package-private cc_binary,
 # so we take it out of the public java_library's jar (where it is bundled as a
 # resource) instead.
+# Extract tcnative from its original per-architecture jar: the filtered Java
+# runtime jar removes .so files on ARM64.
 [genrule(
     name = name,
     srcs = [jar],
@@ -336,13 +338,13 @@ java_library(
     (
         "extract_libnetty_tcnative_linux_x86_64.so",
         "libnetty_tcnative_linux_x86_64.so",
-        ":netty_tcnative/netty-tcnative-filtered.jar",
+        "@maven//:io_netty_netty_tcnative_boringssl_static_linux_x86_64_file",
         "META-INF/native/libnetty_tcnative_linux_x86_64.so",
     ),
     (
         "extract_libnetty_tcnative_linux_aarch_64.so",
         "libnetty_tcnative_linux_aarch_64.so",
-        ":netty_tcnative/netty-tcnative-filtered.jar",
+        "@maven//:io_netty_netty_tcnative_boringssl_static_linux_aarch_64_file",
         "META-INF/native/libnetty_tcnative_linux_aarch_64.so",
     ),
     (
