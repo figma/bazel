@@ -83,6 +83,7 @@ cc_binary(
     target_compatible_with = ["@platforms//os:windows"],
     visibility = [
         "//src/main/java/com/google/devtools/build/lib/jni:__pkg__",
+        "//src/main/native:__pkg__",
     ],
     deps = [
         ":lib-file",
