@@ -448,6 +448,16 @@ static vector<string> GetServerExeArgs(const blaze_util::Path &jvm_path,
   // TODO: Drop this when protobuf uses VarHandle.
   result.push_back("-Dsun.misc.unsafe.memory.access=allow");
 
+#if defined(__linux__) && (defined(__x86_64__) || defined(__aarch64__))
+  // zstd-jni requests a versioned library name, so java.library.path cannot
+  // resolve the unversioned library packaged in the install base. Load that
+  // persistent file directly instead of extracting a temporary copy, which
+  // prevents rootless CRIU from checkpointing the server.
+  result.push_back("-DZstdNativePath=" +
+                   real_install_dir.GetRelative("libzstd-jni.so")
+                       .AsJvmArgument());
+#endif
+
 #if defined(_WIN32)
   // See and use more than 64 CPUs on Windows.
   // https://bugs.openjdk.org/browse/JDK-6942632

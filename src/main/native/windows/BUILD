@@ -75,6 +75,7 @@ cc_binary(
     linkshared = 1,
     visibility = [
         "//src/main/java/com/google/devtools/build/lib/jni:__pkg__",
+        "//src/main/native:__pkg__",
     ],
     deps = [
         ":lib-file",

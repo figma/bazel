@@ -144,6 +144,14 @@ public class CommandProfilerModule extends BlazeModule {
   @Nullable
   private static AsyncProfiler getProfiler() {
     try {
+      // AsyncProfiler prefers extracting its embedded resource to a temporary
+      // file over searching java.library.path. Preload the persistent install-base
+      // copy so getInstance() can use it without creating a deleted mapping.
+      try {
+        System.loadLibrary("asyncProfiler");
+      } catch (UnsatisfiedLinkError e) {
+        // Tests and other contexts without an install base use the bundled resource.
+      }
       return AsyncProfiler.getInstance();
     } catch (Throwable t) {
       // Loading the JNI must be allowed to fail, as we might be running on an unsupported platform.
