@@ -171,3 +171,62 @@ Native tests independently exercise argument order/multiplicity, immutable
 metadata, and reconstruction after live-file deletion. In the current restricted
 validation container, CRIU is absent and private `/proc` mounts are denied, so
 the real dump/restore integration cases are skipped.
+
+## Compression and lifecycle timings
+
+When the installed CRIU advertises `--compress` in `criu --help`, init adds
+`--compress` to the dump to store the memory image with LZ4. Builds without that
+option keep producing uncompressed images. Restore uses `--decompress-threads 0`
+when advertised, allowing CRIU to choose its decode worker count from the
+available CPUs; this also works for uncompressed images. If a compressed image
+cannot be read by a replacement CRIU, restore reports the failure and cold-starts.
+
+The launcher probes help without requiring checkpoint privileges, captures both
+stdout and stderr, and limits the probe to two seconds and 1 MiB. A failed or
+unresponsive probe disables the optional flags. `--client_debug` logs whether
+LZ4 is supported. Probe results are prepared before forking init.
+
+Successful checkpoints and restore attempts print the checkpoint creation time
+in UTC. This is the modification time of `criu/ns-pid`, written when the dump
+succeeds and preserved across restores. Monotonic-clock logs report `dump took
+<N>ms` and `restore took <N>ms`. The dump interval covers the control request
+through init's reply, after GC/readiness; the restore interval covers namespace
+setup and CRIU, before host-identity reconciliation and client reconnection.
+
+## Measure image size and restore through the first command
+
+Build `//src:bazel-bin` and warm a server with the intended workload before taking
+a checkpoint. Use the same workspace, output base, and startup settings for every
+step. For example:
+
+```sh
+BAZEL="$PWD/bazel-bin/src/bazel"
+OB=/tmp/bazel-criu-benchmark
+"$BAZEL" --nosystem_rc --nohome_rc --noworkspace_rc --criu \
+  --output_base="$OB" info server_pid
+# Run the workload to capture here, with the same startup flags.
+"$BAZEL" --nosystem_rc --nohome_rc --noworkspace_rc --criu \
+  --output_base="$OB" checkpoint
+python3 scripts/benchmark_criu.py --bazel "$BAZEL" --workspace "$PWD" \
+  --output-base "$OB" --runs 5 \
+  --startup-arg=--nosystem_rc --startup-arg=--nohome_rc \
+  --startup-arg=--noworkspace_rc > /tmp/criu-benchmark.json
+```
+
+Pass any additional checkpoint-time settings using repeated `--startup-arg`,
+for example `--startup-arg=--host_jvm_args=-Xmx2g`. The benchmark uses an existing
+snapshot, shuts down that output-base server before measuring, and shuts down
+after each sample to exercise repeated restore from the same images.
+
+The JSON report contains the logical and allocated bytes of CRIU image files
+(`*.img*`, excluding logs and launcher metadata), the checkpoint creation time,
+and each native restore duration. `restore_to_first_command_ms` measures from
+launching the client through successful completion of `info server_pid`, including
+the feature probe, restore, identity reconciliation, reconnection, and command
+execution. It reports every sample plus minimum, median, and maximum latency.
+Shutdown is outside that interval. Warm attachment, failed commands, and cold
+fallback are rejected so they cannot produce misleading restore measurements.
+
+Real image-size and latency measurements require a host satisfying the
+prerequisites above. This validation container still lacks CRIU and permission
+to mount private `/proc`; no real lifecycle performance numbers are available.

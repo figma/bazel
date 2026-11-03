@@ -94,6 +94,11 @@ py_binary(
     deps = ["//third_party/py/abseil"],
 )
 
+py_binary(
+    name = "benchmark_criu",
+    srcs = ["benchmark_criu.py"],
+)
+
 genrule(
     name = "fish_completion",
     outs = ["bazel.fish"],

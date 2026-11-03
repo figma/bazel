@@ -221,6 +221,8 @@ function test_criu_checkpoint_leaves_running_or_stops() {
   init_pid=$(cat "${ob}/server/server.init_host_pid")
   bazel --criu --output_base="${ob}" checkpoint --leave_running >"${TEST_log}" 2>&1 \
       || fail "Leave-running checkpoint failed"
+  expect_log "criu: dump took [0-9][0-9]*ms"
+  expect_log "checkpoint created .*Z"
   [[ -s "${ob}/criu/inventory.img" ]] || fail "No CRIU image inventory"
   [[ -s "${ob}/criu/ns-pid" && -s "${ob}/criu/install-key" ]] || fail "No checkpoint identity"
   [[ ! -e "${ob}/server/checkpoint.sentinel" ]] || fail "Server remained parked"
@@ -253,6 +255,8 @@ function test_criu_restores_repeatedly_and_rejects_different_jvm_args() {
     bazel --criu --output_base="${ob}" --host_jvm_args="${jvm_arg}" \
         info server_pid >"${TEST_log}" 2>&1 || fail "Restore ${attempt} failed"
     expect_log "criu: restored server at host PID"
+    expect_log "criu: restore took [0-9][0-9]*ms"
+    expect_log "checkpoint created .*Z"
     expect_not_log "Starting local"
     server_pid=$(cat "${ob}/server/server.host_pid")
     init_pid=$(cat "${ob}/server/server.init_host_pid")
