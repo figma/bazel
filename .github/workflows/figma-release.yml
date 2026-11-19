@@ -272,7 +272,7 @@ jobs:
           if-no-files-found: error
 
   # macOS has no glibc, so the darwin binaries are built natively on the runner
-  # for each architecture: arm64 on Apple-silicon macos-14, x86_64 on the native
+  # for each architecture: arm64 on Apple-silicon macos-15, x86_64 on the native
   # Intel macos-15-intel runner. Bazelisk's darwin assets use the `amd64` arch
   # token for x86_64 (matching the linux convention), so we download per
   # `bazelisk_arch` while the published asset name keeps Bazelisk's
@@ -295,6 +295,8 @@ jobs:
   # (https://github.com/actions/runner-images/issues/13046). Before then, either
   # move this leg to a self-hosted Intel Mac (as upstream does) or drop
   # darwin-x86_64 support.
+  # GitHub retired macos-14 on 2026-11-02; its ARM64 configuration is no
+  # longer supported. Use macos-15 for the native ARM64 build.
   build-darwin:
     name: build ${{ matrix.platform }}
     needs: setup
@@ -305,7 +307,7 @@ jobs:
       matrix:
         include:
           - platform: darwin-arm64
-            runner: macos-14
+            runner: macos-15
             arch: arm64
             bazelisk_arch: arm64
           - platform: darwin-x86_64
