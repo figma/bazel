@@ -34,6 +34,7 @@ import com.google.devtools.common.options.OptionDocumentationCategory;
 import com.google.devtools.common.options.OptionEffectTag;
 import com.google.devtools.common.options.OptionMetadataTag;
 import com.google.devtools.common.options.OptionsBase;
+import com.google.devtools.common.options.OptionsClass;
 import com.google.devtools.common.options.OptionsParser;
 import com.google.devtools.common.options.OptionsParsingResult;
 import java.io.IOException;
@@ -62,7 +63,8 @@ import java.io.IOException;
             + " checkpoint. Only meaningful under the --criu startup option; invoked by the"
             + " launcher's 'checkpoint' command, not typically by hand.")
 public final class CheckpointCommand implements BlazeCommand {
-  public static final class Options extends OptionsBase {
+  @OptionsClass
+  public abstract static class Options extends OptionsBase {
     @Option(
         name = "checkpoint_token",
         defaultValue = "",
@@ -70,7 +72,7 @@ public final class CheckpointCommand implements BlazeCommand {
         effectTags = {OptionEffectTag.UNKNOWN},
         metadataTags = {OptionMetadataTag.HIDDEN},
         help = "Internal launcher checkpoint request identity.")
-    public String token;
+    public abstract String getToken();
   }
 
   private static final GoogleLogger logger = GoogleLogger.forEnclosingClass();
@@ -94,7 +96,7 @@ public final class CheckpointCommand implements BlazeCommand {
         env.getRuntime()
             .getStartupOptionsProvider()
             .getOptions(BlazeServerStartupOptions.class)
-            .criu;
+            .getCriu();
     if (!criuMode) {
       String message =
           "The 'checkpoint' command requires CRIU mode (pass the --criu startup option).";
@@ -105,7 +107,7 @@ public final class CheckpointCommand implements BlazeCommand {
     Path serverDir = env.getRuntime().getServerDirectory();
     Path request = serverDir.getChild("checkpoint.request");
     Path sentinel = serverDir.getChild(SENTINEL_FILE);
-    String token = options.getOptions(Options.class).token;
+    String token = options.getOptions(Options.class).getToken();
     try {
       // A cancelled launcher can leave this command queued behind active work.
       // Recheck the request after GC as well, before publishing readiness.

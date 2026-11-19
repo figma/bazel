@@ -45,9 +45,12 @@ public class BazelDiffAwarenessModule extends BlazeModule {
 
   @Override
   public void beforeCommand(CommandEnvironment env) {
-    if (env.getRuntime().getStartupOptionsProvider().getOptions(BlazeServerStartupOptions.class).getCriu()
+    if (env.getRuntime()
+            .getStartupOptionsProvider()
+            .getOptions(BlazeServerStartupOptions.class)
+            .getCriu()
         && env.getOptions().containsExplicitOption("watchfs")
-        && env.getOptions().getOptions(LocalDiffAwareness.Options.class).watchFS) {
+        && env.getOptions().getOptions(LocalDiffAwareness.Options.class).getWatchFS()) {
       env.getReporter().handle(Event.warn("--watchfs is ignored in CRIU mode"));
     }
   }

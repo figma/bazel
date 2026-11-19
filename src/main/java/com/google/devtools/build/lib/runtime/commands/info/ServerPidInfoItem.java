@@ -34,7 +34,7 @@ public final class ServerPidInfoItem extends InfoItem {
     if (env.getRuntime()
         .getStartupOptionsProvider()
         .getOptions(BlazeServerStartupOptions.class)
-        .criu) {
+        .getCriu()) {
       try {
         int hostPid =
             Integer.parseInt(

@@ -20,7 +20,6 @@ import static org.junit.Assert.assertThrows;
 import com.google.common.collect.ImmutableList;
 import com.google.devtools.build.lib.analysis.BlazeDirectories;
 import com.google.devtools.build.lib.analysis.ServerDirectories;
-import com.google.devtools.build.lib.runtime.CommandDispatcher.LockingMode;
 import com.google.devtools.build.lib.runtime.CommandDispatcher.UiVerbosity;
 import com.google.devtools.build.lib.runtime.commands.CheckpointCommand;
 import com.google.devtools.build.lib.runtime.proto.InvocationPolicyOuterClass.InvocationPolicy;
@@ -31,6 +30,7 @@ import com.google.devtools.build.lib.vfs.FileSystemUtils;
 import com.google.devtools.build.lib.vfs.Path;
 import com.google.devtools.common.options.OptionsParser;
 import com.google.devtools.common.options.OptionsParsingResult;
+import java.time.Duration;
 import java.util.Arrays;
 import java.util.Optional;
 import java.util.concurrent.CountDownLatch;
@@ -110,7 +110,7 @@ public final class CheckpointCommandTest {
         InvocationPolicy.getDefaultInstance(),
         Arrays.asList(args),
         new RecordingOutErr(),
-        LockingMode.WAIT,
+        Duration.ofMillis(Long.MAX_VALUE),
         UiVerbosity.NORMAL,
         "checkpoint test",
         System.currentTimeMillis(),

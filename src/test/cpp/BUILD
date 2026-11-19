@@ -18,7 +18,8 @@ cc_test(
     tags = ["no-sandbox"],
     deps = [
         "//src/main/cpp:blaze_util",
-        "//src/main/cpp/util",
+        "//src/main/cpp/util:filesystem",
+        "//src/main/cpp/util:strings",
         "@com_google_googletest//:gtest_main",
     ],
 )
@@ -167,8 +168,8 @@ cc_test(
     deps = [
         "//src/main/cpp:blaze_criu_client",
         "//src/main/cpp:blaze_util",
-        "//src/main/cpp/util",
         "//src/main/cpp/util:blaze_exit_code",
+        "//src/main/cpp/util:filesystem",
         "//src/main/protobuf:command_server_cc_grpc",
         "//src/main/protobuf:command_server_cc_proto",
         "@com_google_googletest//:gtest_main",

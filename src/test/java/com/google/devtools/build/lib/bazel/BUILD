@@ -33,9 +33,10 @@ java_test(
     srcs = ["BazelDiffAwarenessModuleTest.java"],
     runtime_deps = ["//third_party/allocation_instrumenter:allocation_instrumenter_runtime"],
     deps = [
-        "//src/main/java/com/google/devtools/build/lib:runtime",
         "//src/main/java/com/google/devtools/build/lib/bazel:modules",
         "//src/main/java/com/google/devtools/build/lib/events",
+        "//src/main/java/com/google/devtools/build/lib/runtime:blaze_command_cluster",
+        "//src/main/java/com/google/devtools/build/lib/runtime:blaze_server_startup_options",
         "//src/main/java/com/google/devtools/build/lib/skyframe:local_diff_awareness",
         "//src/main/java/com/google/devtools/common/options",
         "//third_party:junit4",

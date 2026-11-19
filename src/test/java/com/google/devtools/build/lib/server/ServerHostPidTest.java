@@ -40,11 +40,12 @@ public final class ServerHostPidTest {
 
   private PidFileWatcher pidFileWatcher;
 
-  private GrpcServerImpl createServer(boolean criu) throws Exception {
+  private CommandServer createServer(boolean criu) throws Exception {
     serverDirectory.createDirectoryAndParents();
     FileSystemUtils.writeContentAsLatin1(serverDirectory.getChild("server.pid.txt"), "3");
     pidFileWatcher = new PidFileWatcher(serverDirectory.getChild("server.pid.txt"), 3);
-    return new GrpcServerImpl(
+    return new CommandServer(
+        null,
         null,
         ShutdownHooks.createUnregistered(),
         pidFileWatcher,
@@ -72,7 +73,7 @@ public final class ServerHostPidTest {
 
   @Test
   public void firstPublicationUsesHostPidAndLeavesWatcherPidAlone() throws Exception {
-    GrpcServerImpl server = createServer(true);
+    CommandServer server = createServer(true);
     publishHostPid("12345");
     server.writeServerInfo("127.0.0.1:1234");
     assertThat(readInfo().getPid()).isEqualTo(12345);
@@ -86,7 +87,7 @@ public final class ServerHostPidTest {
   @Test
   public void signalReconcilesRestoredPidFromMemory() throws Exception {
     org.junit.Assume.assumeTrue(OS.getCurrent() == OS.LINUX);
-    GrpcServerImpl server = createServer(true);
+    CommandServer server = createServer(true);
     publishHostPid("12345");
     server.writeServerInfo("127.0.0.1:1234");
     ServerInfo before = readInfo();
@@ -118,7 +119,7 @@ public final class ServerHostPidTest {
 
   @Test
   public void invalidRestoredPidDoesNotReplaceWorkingMetadata() throws Exception {
-    GrpcServerImpl server = createServer(true);
+    CommandServer server = createServer(true);
     publishHostPid("12345");
     server.writeServerInfo("127.0.0.1:1234");
     ServerInfo before = readInfo();
@@ -131,7 +132,7 @@ public final class ServerHostPidTest {
 
   @Test
   public void ordinaryServerIgnoresStaleHostPid() throws Exception {
-    GrpcServerImpl server = createServer(false);
+    CommandServer server = createServer(false);
     publishHostPid("12345");
     server.writeServerInfo("127.0.0.1:1234");
     server.reconcileHostPid();
@@ -140,7 +141,7 @@ public final class ServerHostPidTest {
 
   @Test
   public void missingHostPidCannotAdvertiseNamespacePidOnInterruptedStartup() throws Exception {
-    GrpcServerImpl server = createServer(true);
+    CommandServer server = createServer(true);
     Thread.currentThread().interrupt();
     try {
       assertThrows(AbruptExitException.class, () -> server.writeServerInfo("127.0.0.1:1234"));

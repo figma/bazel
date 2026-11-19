@@ -60,7 +60,8 @@ java_test(
     srcs = ["ServerPidInfoItemTest.java"],
     runtime_deps = ["//third_party/allocation_instrumenter:allocation_instrumenter_runtime"],
     deps = [
-        "//src/main/java/com/google/devtools/build/lib:runtime",
+        "//src/main/java/com/google/devtools/build/lib/runtime:blaze_command_cluster",
+        "//src/main/java/com/google/devtools/build/lib/runtime:blaze_server_startup_options",
         "//src/main/java/com/google/devtools/build/lib/runtime/commands/info",
         "//src/main/java/com/google/devtools/build/lib/vfs",
         "//src/main/java/com/google/devtools/build/lib/vfs/inmemoryfs",

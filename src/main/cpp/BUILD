@@ -130,8 +130,8 @@ cc_library(
     hdrs = ["blaze_criu_client.h"],
     deps = [
         ":blaze_util",
-        "//src/main/cpp/util",
         "//src/main/cpp/util:blaze_exit_code",
+        "//src/main/cpp/util:filesystem",
         "//src/main/cpp/util:logging",
         "//src/main/protobuf:command_server_cc_grpc",
         "//src/main/protobuf:command_server_cc_proto",
